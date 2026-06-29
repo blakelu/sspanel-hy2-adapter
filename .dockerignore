@@ -3,5 +3,8 @@
 bin
 data
 config.yaml
+config.docker-hy2.yaml
+hysteria.docker.yaml
 .env
+certs
 *.log

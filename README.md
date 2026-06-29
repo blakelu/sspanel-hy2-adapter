@@ -44,6 +44,13 @@ $_ENV['checkNodeIp'] = true;
 cp config.example.yaml config.yaml
 ```
 
+使用 Docker bind mount 时，容器内服务以非 root 用户运行，因此配置文件需要具备只读权限；密钥仍放在权限为 `600` 的 `.env` 中：
+
+```bash
+chmod 644 config.yaml
+chmod 600 .env
+```
+
 配置文件会展开 `${ENV_NAME}`。最小环境变量示例：
 
 ```bash
@@ -96,6 +103,34 @@ Docker（生产 Linux，HY2 在宿主机运行）：
 cp docker-compose.example.yaml docker-compose.yaml
 docker compose up -d --build
 ```
+
+### 独立 Docker HY2
+
+如果不希望 Adapter 使用宿主机已有的 HY2，可使用 [docker-compose.hy2.yaml](docker-compose.hy2.yaml) 同时启动一套隔离的 HY2：
+
+```bash
+cp config.docker-hy2.example.yaml config.docker-hy2.yaml
+cp hysteria.docker.example.yaml hysteria.docker.yaml
+cp .env.example .env                 # 已有 .env 时不要覆盖
+chmod 644 config.docker-hy2.yaml
+chmod 600 hysteria.docker.yaml .env
+```
+
+部署前需要完成：
+
+1. 修改 `config.docker-hy2.yaml` 中的 `panel.node_id`。
+2. 填写 `.env` 的面板、Adapter、Stats 密钥和 `HY2_CERT_DIR`。
+3. 将 `hysteria.docker.yaml` 中的域名、`REPLACE_ADAPTER_AUTH_TOKEN`、`REPLACE_HY2_STATS_SECRET` 替换为实际值。
+4. 在防火墙和云安全组开放 `${HY2_PUBLIC_PORT:-8443}/UDP`。
+
+启动：
+
+```bash
+docker compose -f docker-compose.hy2.yaml up -d --build
+docker compose -f docker-compose.hy2.yaml logs -f adapter hysteria
+```
+
+这套部署中，HY2 通过 `adapter:8080` 调用认证，Adapter 通过 `hysteria:9999` 读取统计；`8080` 和 `9999` 不对公网开放。宿主机调试地址分别为 `127.0.0.1:18080` 和 `127.0.0.1:19999`，公网客户端连接端口默认为 `8443/UDP`。
 
 systemd 示例见 [deploy/sspanel-hy2-adapter.service](deploy/sspanel-hy2-adapter.service)。使用该文件时，将 `hy2.state_file` 设置为 `/var/lib/sspanel-hy2-adapter/traffic-state.json`。
 

@@ -1,0 +1,26 @@
+# 复制为 hysteria.docker.yaml，然后替换所有 REPLACE_* 值。
+# 这里的密钥必须写入实际值；Hysteria 不使用 Adapter 的配置展开逻辑。
+listen: :8443
+
+tls:
+  # Compose 将 HY2_CERT_DIR 挂载为容器内 /certs。
+  cert: /certs/live/REPLACE_DOMAIN/fullchain.pem
+  key: /certs/live/REPLACE_DOMAIN/privkey.pem
+
+auth:
+  type: http
+  http:
+    # 使用 Compose 服务名访问 Adapter，不能写 127.0.0.1。
+    url: http://adapter:8080/auth?token=REPLACE_ADAPTER_AUTH_TOKEN
+    insecure: false
+
+trafficStats:
+  # 只在 Docker 内部网络监听；宿主机调试端口由 Compose 映射到 127.0.0.1。
+  listen: :9999
+  secret: REPLACE_HY2_STATS_SECRET
+
+masquerade:
+  type: proxy
+  proxy:
+    url: https://www.bing.com/
+    rewriteHost: true
