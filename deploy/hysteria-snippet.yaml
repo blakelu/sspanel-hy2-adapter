@@ -1,0 +1,12 @@
+# 合并到 Hysteria 2 服务端配置中。
+auth:
+  type: http
+  http:
+    # token 要与适配器 server.auth_token 完全一致，并进行 URL 编码。
+    url: http://127.0.0.1:8080/auth?token=REPLACE_WITH_ADAPTER_AUTH_TOKEN
+    insecure: false
+
+trafficStats:
+  # 只允许本机适配器读取；不要公开到公网。
+  listen: 127.0.0.1:9999
+  secret: REPLACE_WITH_HY2_STATS_SECRET

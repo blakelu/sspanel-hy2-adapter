@@ -30,3 +30,9 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+/bin/
+/data/
+/config.yaml
+/.env
+*.log

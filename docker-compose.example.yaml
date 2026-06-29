@@ -1,0 +1,20 @@
+services:
+  adapter:
+    build:
+      context: .
+      args:
+        VERSION: local
+    restart: unless-stopped
+    # Linux 上与宿主机 HY2 共用 127.0.0.1；桥接网络部署时改用服务名互联。
+    network_mode: host
+    env_file:
+      - .env
+    volumes:
+      - ./config.yaml:/etc/sspanel-hy2-adapter/config.yaml:ro
+      - adapter-state:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp
+
+volumes:
+  adapter-state:
