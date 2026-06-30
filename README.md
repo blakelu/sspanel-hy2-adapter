@@ -66,6 +66,45 @@ docker compose -f docker-compose.hy2.yaml logs -f adapter hysteria port-sync
 
 这套部署中，HY2 通过 `adapter:8080` 调用认证，Adapter 通过 `hysteria:9999` 读取统计；`8080` 和 `9999` 不对公网开放。宿主机调试地址分别为 `127.0.0.1:18080` 和 `127.0.0.1:19999`，公网客户端连接端口默认为 `8443/UDP`。
 
+### 重启与重建
+
+重启全部 Compose 服务：
+
+```bash
+docker compose -f docker-compose.hy2.yaml restart
+```
+
+只重启单个服务：
+
+```bash
+docker compose -f docker-compose.hy2.yaml restart adapter
+docker compose -f docker-compose.hy2.yaml restart hysteria
+docker compose -f docker-compose.hy2.yaml restart port-sync
+```
+
+普通 `restart` 不会重新构建镜像，也不会让容器重新读取 Compose 中的环境变量。
+修改代码、Dockerfile、`.env`、Compose 配置或 `HOST_PROJECT_DIR` 后，使用：
+
+```bash
+docker compose -f docker-compose.hy2.yaml up -d --build --force-recreate
+```
+
+重建后检查状态和日志：
+
+```bash
+docker compose -f docker-compose.hy2.yaml ps
+docker compose -f docker-compose.hy2.yaml logs --tail=100 adapter hysteria port-sync
+```
+
+只有 Docker Engine 本身异常时才重启宿主机 Docker；该操作会短暂影响服务器上的其他
+Docker 容器：
+
+```bash
+sudo systemctl restart docker
+sudo systemctl status docker --no-pager
+docker compose -f docker-compose.hy2.yaml up -d
+```
+
 ### 从面板自动同步 Docker 对外端口
 
 Docker 发布端口不能热更新，因此 Compose 中包含常驻的 `port-sync` 服务。它每隔
