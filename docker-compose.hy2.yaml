@@ -1,55 +1,51 @@
-services:
-  adapter:
-    build:
-      context: .
-      args:
-        VERSION: local
-    restart: unless-stopped
-    env_file:
-      - .env
-    ports:
-      # 仅用于宿主机健康检查和手工认证测试，不对公网开放。
-      - "127.0.0.1:${ADAPTER_DEBUG_PORT:-18080}:8080/tcp"
-    volumes:
-      - ./config.docker-hy2.yaml:/etc/sspanel-hy2-adapter/config.yaml:ro
-      - adapter-state:/app/data
-    read_only: true
-    tmpfs:
-      - /tmp
-    security_opt:
-      - no-new-privileges:true
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
-      interval: 10s
-      timeout: 3s
-      retries: 6
-      start_period: 10s
-    networks:
-      - hy2-internal
+ services:
+    adapter:
+      build:
+        context: .
+        args:
+          VERSION: local
+      restart: unless-stopped
+      env_file:
+        - .env
+      ports:
+        - "127.0.0.1:${ADAPTER_DEBUG_PORT:-18080}:8080/tcp"
+      volumes:
+        - ./config.docker-hy2.yaml:/etc/sspanel-hy2-adapter/config.yaml:ro
+        - adapter-state:/app/data
+      read_only: true
+      tmpfs:
+        - /tmp
+      security_opt:
+        - no-new-privileges:true
+      healthcheck:
+        test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+        interval: 10s
+        timeout: 3s
+        retries: 6
+        start_period: 10s
+      networks:
+        - hy2-internal
 
-  hysteria:
-    image: tobyxdd/hysteria:latest
-    restart: unless-stopped
-    command: ["server", "-c", "/etc/hysteria.yaml"]
-    environment:
-      # ACME 配置未显式设置 dir 时也固定写入持久卷。
-      HYSTERIA_ACME_DIR: /acme
-    depends_on:
-      adapter:
-        condition: service_healthy
-    ports:
-      # 新 HY2 的公网 QUIC/UDP 端口，不与宿主机已有 HY2 共用。
-      - "${HY2_PUBLIC_PORT:-8443}:8443/udp"
-      # 仅用于从宿主机调试 stats；Adapter 走 Docker 内部网络的 9999 端口。
-      - "127.0.0.1:${HY2_STATS_DEBUG_PORT:-19999}:9999/tcp"
-    volumes:
-      - ./hysteria.docker.yaml:/etc/hysteria.yaml:ro
-      - ${HY2_CERT_DIR:-/etc/letsencrypt}:/certs:ro
-      - hy2-acme:/acme
-    security_opt:
-      - no-new-privileges:true
-    networks:
-      - hy2-internal
+    hysteria:
+      image: tobyxdd/hysteria:latest
+      restart: unless-stopped
+      command: ["server", "-c", "/etc/hysteria.yaml"]
+      environment:
+        HYSTERIA_ACME_DIR: /acme
+      depends_on:
+        adapter:
+          condition: service_healthy
+      ports:
+        - "${HY2_PUBLIC_PORT:-8443}:8443/udp"
+        - "127.0.0.1:${HY2_STATS_DEBUG_PORT:-19999}:9999/tcp"
+      volumes:
+        - ./hysteria.docker.yaml:/etc/hysteria.yaml:ro
+        - ${HY2_CERT_DIR:-/etc/letsencrypt}:/certs:ro
+        - hysteria-acme:/acme
+      security_opt:
+        - no-new-privileges:true
+      networks:
+        - hy2-internal
 
 networks:
   hy2-internal:
@@ -57,4 +53,5 @@ networks:
 
 volumes:
   adapter-state:
-  hy2-acme:
+  hysteria-acme:
+  
