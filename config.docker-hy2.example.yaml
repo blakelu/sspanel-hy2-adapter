@@ -5,12 +5,13 @@ server:
   auth_path: /auth
   auth_token: ${ADAPTER_AUTH_TOKEN}
   read_timeout: 5s
-  write_timeout: 5s
+  # 管理接口在切换端口前会串行采集 HY2 stats 并上报面板，需覆盖两次后端请求。
+  write_timeout: 15s
 
 panel:
   base_url: ${SSPANEL_BASE_URL}
   key: ${SSPANEL_MU_KEY}
-  node_id: 1
+  node_id: ${SSPANEL_NODE_ID}
   timeout: 5s
   heartbeat_interval: 60s
   insecure_skip_verify: false

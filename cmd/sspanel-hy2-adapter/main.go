@@ -70,7 +70,7 @@ func run() error {
 
 	httpServer := &http.Server{
 		Addr:         cfg.Server.Listen,
-		Handler:      httpserver.New(cfg.Server.AuthPath, cfg.Server.AuthToken, userSource, logger),
+		Handler:      httpserver.New(cfg.Server.AuthPath, cfg.Server.AuthToken, userSource, collector, logger),
 		ReadTimeout:  cfg.Server.ReadTime.Value(),
 		WriteTimeout: cfg.Server.WriteTime.Value(),
 		IdleTimeout:  60 * time.Second,

@@ -118,8 +118,8 @@ chmod 600 hysteria.docker.yaml .env
 
 部署前需要完成：
 
-1. 修改 `config.docker-hy2.yaml` 中的 `panel.node_id`。
-2. 填写 `.env` 的面板、Adapter、Stats 密钥和 `HY2_CERT_DIR`。
+1. 填写 `.env` 的面板地址、`SSPANEL_NODE_ID`、Adapter、Stats 密钥和 `HY2_CERT_DIR`。
+2. 确认 `config.docker-hy2.yaml` 的 `panel.node_id` 为 `${SSPANEL_NODE_ID}`。
 3. 将 `hysteria.docker.yaml` 中的域名、`REPLACE_ADAPTER_AUTH_TOKEN`、`REPLACE_HY2_STATS_SECRET` 替换为实际值。
 4. 在防火墙和云安全组开放 `${HY2_PUBLIC_PORT:-8443}/UDP`。
 
@@ -131,6 +131,61 @@ docker compose -f docker-compose.hy2.yaml logs -f adapter hysteria
 ```
 
 这套部署中，HY2 通过 `adapter:8080` 调用认证，Adapter 通过 `hysteria:9999` 读取统计；`8080` 和 `9999` 不对公网开放。宿主机调试地址分别为 `127.0.0.1:18080` 和 `127.0.0.1:19999`，公网客户端连接端口默认为 `8443/UDP`。
+
+### 从面板自动同步 Docker 对外端口
+
+Docker 发布端口不能热更新，因此项目提供宿主机同步脚本
+[scripts/sync-panel-port.sh](scripts/sync-panel-port.sh)。脚本读取节点
+`custom_config.offset_port_node`，原子更新 `.env` 的 `HY2_PUBLIC_PORT`，并且只重建
+`hysteria` 服务。重建前脚本会通过 Adapter 的受保护接口强制采集一次 HY2 流量；
+采集失败时不会切换端口。Adapter、流量 checkpoint 和 ACME 数据卷不会被重建。
+Compose 已将 `HYSTERIA_ACME_DIR=/acme` 挂载到 `hy2-acme` 持久卷，避免每次端口
+变化都重新申请证书。
+
+面板节点配置示例：
+
+```json
+{
+  "offset_port_user": 8443,
+  "offset_port_node": 8443,
+  "sni": "korea.hy2.example.com",
+  "allow_insecure": false
+}
+```
+
+没有额外端口转发时，`offset_port_user` 与 `offset_port_node` 应保持一致：前者用于订阅下发，后者驱动 Docker 宿主机 UDP 端口。
+
+`.env` 必须补充与 Adapter 配置相同的节点 ID，并建议限定允许端口范围。
+脚本还会使用现有的 `ADAPTER_AUTH_TOKEN` 和 `ADAPTER_DEBUG_PORT` 调用本机 Adapter：
+
+```dotenv
+SSPANEL_NODE_ID=11
+HY2_ALLOWED_PORT_MIN=8000
+HY2_ALLOWED_PORT_MAX=9000
+```
+
+执行同步前，Adapter 和 Hysteria 必须已启动。`ADAPTER_DEBUG_PORT` 仅绑定
+`127.0.0.1`，不要将该管理入口暴露到公网。同步接口需要等待 stats 采集和面板上报，
+请将 `config.docker-hy2.yaml` 的 `server.write_timeout` 设置为至少 `15s`。
+
+依赖：Linux、`curl`、`docker compose`、`flock`、`jq`。先手工验证一次：
+
+```bash
+sudo ./scripts/sync-panel-port.sh
+```
+
+启用每 30 秒同步：
+
+```bash
+sudo install -m 0644 deploy/sspanel-hy2-port-sync.service /etc/systemd/system/
+sudo install -m 0644 deploy/sspanel-hy2-port-sync.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now sspanel-hy2-port-sync.timer
+sudo systemctl start sspanel-hy2-port-sync.service
+sudo journalctl -u sspanel-hy2-port-sync.service -n 50 --no-pager
+```
+
+示例 unit 假定项目位于 `/opt/sspanel-hy2-adapter`；路径不同必须先修改 service。端口变化会短暂中断现有 HY2 连接。系统防火墙和云安全组也必须预先允许 `HY2_ALLOWED_PORT_MIN` 到 `HY2_ALLOWED_PORT_MAX` 的 UDP 范围，否则 Docker 已切换但公网仍不可达。
 
 systemd 示例见 [deploy/sspanel-hy2-adapter.service](deploy/sspanel-hy2-adapter.service)。使用该文件时，将 `hy2.state_file` 设置为 `/var/lib/sspanel-hy2-adapter/traffic-state.json`。
 

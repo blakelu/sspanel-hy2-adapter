@@ -37,4 +37,5 @@ go.work.sum
 /config.docker-hy2.yaml
 /hysteria.docker.yaml
 /.env
+/.port-sync.lock
 *.log

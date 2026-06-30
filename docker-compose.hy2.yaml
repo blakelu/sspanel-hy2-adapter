@@ -31,6 +31,9 @@ services:
     image: tobyxdd/hysteria:latest
     restart: unless-stopped
     command: ["server", "-c", "/etc/hysteria.yaml"]
+    environment:
+      # ACME 配置未显式设置 dir 时也固定写入持久卷。
+      HYSTERIA_ACME_DIR: /acme
     depends_on:
       adapter:
         condition: service_healthy
@@ -42,6 +45,7 @@ services:
     volumes:
       - ./hysteria.docker.yaml:/etc/hysteria.yaml:ro
       - ${HY2_CERT_DIR:-/etc/letsencrypt}:/certs:ro
+      - hy2-acme:/acme
     security_opt:
       - no-new-privileges:true
     networks:
@@ -53,3 +57,4 @@ networks:
 
 volumes:
   adapter-state:
+  hy2-acme:

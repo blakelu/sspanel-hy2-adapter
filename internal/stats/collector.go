@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sort"
 	"strconv"
+	"sync"
 	"time"
 
 	"sspanel-uim-hy2-adapter/internal/hy2"
@@ -28,6 +29,7 @@ type Collector struct {
 	interval time.Duration
 	startup  bool
 	logger   *slog.Logger
+	mu       sync.Mutex
 }
 
 func NewCollector(reader TrafficReader, reporter TrafficReporter, state *State, interval time.Duration, runOnStartup bool, logger *slog.Logger) *Collector {
@@ -55,6 +57,9 @@ func (c *Collector) Run(ctx context.Context) {
 }
 
 func (c *Collector) Collect(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	current, err := c.reader.FetchTraffic(ctx)
 	if err != nil {
 		return err

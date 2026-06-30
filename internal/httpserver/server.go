@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -16,10 +17,15 @@ import (
 const maxAuthBody = 64 << 10
 
 type Server struct {
-	authPath string
-	token    string
-	source   auth.Source
-	logger   *slog.Logger
+	authPath  string
+	token     string
+	source    auth.Source
+	collector TrafficCollector
+	logger    *slog.Logger
+}
+
+type TrafficCollector interface {
+	Collect(ctx context.Context) error
 }
 
 type authRequest struct {
@@ -33,12 +39,36 @@ type authResponse struct {
 	ID string `json:"id,omitempty"`
 }
 
-func New(authPath, token string, source auth.Source, logger *slog.Logger) http.Handler {
-	s := &Server{authPath: authPath, token: token, source: source, logger: logger}
+func New(authPath, token string, source auth.Source, collector TrafficCollector, logger *slog.Logger) http.Handler {
+	s := &Server{authPath: authPath, token: token, source: source, collector: collector, logger: logger}
 	mux := http.NewServeMux()
 	mux.HandleFunc(authPath, s.authenticate)
+	mux.HandleFunc("/admin/collect", s.collectTraffic)
 	mux.HandleFunc("/healthz", s.health)
 	return mux
+}
+
+func (s *Server) collectTraffic(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.token == "" || !tokenMatches(s.token, requestToken(r)) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if s.collector == nil {
+		http.Error(w, "traffic collector unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if err := s.collector.Collect(r.Context()); err != nil {
+		s.logger.Error("manual traffic collection failed", "error", err)
+		writeJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	s.logger.Info("manual traffic collection completed")
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) {
