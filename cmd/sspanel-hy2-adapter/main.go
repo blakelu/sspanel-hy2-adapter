@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -21,6 +22,8 @@ import (
 )
 
 var version = "dev"
+
+var chinaStandardTime = time.FixedZone("CST", 8*60*60)
 
 func main() {
 	if err := run(); err != nil {
@@ -128,13 +131,25 @@ func buildUserSource(ctx context.Context, cfg config.Config, panelClient *panel.
 }
 
 func newLogger(level string) *slog.Logger {
+	return slog.New(newJSONHandler(os.Stdout, level))
+}
+
+func newJSONHandler(writer io.Writer, level string) slog.Handler {
 	levels := map[string]slog.Level{
 		"debug": slog.LevelDebug,
 		"info":  slog.LevelInfo,
 		"warn":  slog.LevelWarn,
 		"error": slog.LevelError,
 	}
-	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: levels[level]}))
+	return slog.NewJSONHandler(writer, &slog.HandlerOptions{
+		Level: levels[level],
+		ReplaceAttr: func(groups []string, attr slog.Attr) slog.Attr {
+			if len(groups) == 0 && attr.Key == slog.TimeKey {
+				attr.Value = slog.TimeValue(attr.Value.Time().In(chinaStandardTime))
+			}
+			return attr
+		},
+	})
 }
 
 func runPanelHeartbeat(ctx context.Context, client *panel.Client, interval time.Duration, logger *slog.Logger) {
