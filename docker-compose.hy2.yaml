@@ -1,51 +1,51 @@
- services:
-    adapter:
-      build:
-        context: .
-        args:
-          VERSION: local
-      restart: unless-stopped
-      env_file:
-        - .env
-      ports:
-        - "127.0.0.1:${ADAPTER_DEBUG_PORT:-18080}:8080/tcp"
-      volumes:
-        - ./config.docker-hy2.yaml:/etc/sspanel-hy2-adapter/config.yaml:ro
-        - adapter-state:/app/data
-      read_only: true
-      tmpfs:
-        - /tmp
-      security_opt:
-        - no-new-privileges:true
-      healthcheck:
-        test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
-        interval: 10s
-        timeout: 3s
-        retries: 6
-        start_period: 10s
-      networks:
-        - hy2-internal
+services:
+  adapter:
+    build:
+      context: .
+      args:
+        VERSION: local
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:${ADAPTER_DEBUG_PORT:-18080}:8080/tcp"
+    volumes:
+      - ./config.docker-hy2.yaml:/etc/sspanel-hy2-adapter/config.yaml:ro
+      - adapter-state:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+    networks:
+      - hy2-internal
 
-    hysteria:
-      image: tobyxdd/hysteria:latest
-      restart: unless-stopped
-      command: ["server", "-c", "/etc/hysteria.yaml"]
-      environment:
-        HYSTERIA_ACME_DIR: /acme
-      depends_on:
-        adapter:
-          condition: service_healthy
-      ports:
-        - "${HY2_PUBLIC_PORT:-8443}:8443/udp"
-        - "127.0.0.1:${HY2_STATS_DEBUG_PORT:-19999}:9999/tcp"
-      volumes:
-        - ./hysteria.docker.yaml:/etc/hysteria.yaml:ro
-        - ${HY2_CERT_DIR:-/etc/letsencrypt}:/certs:ro
-        - hysteria-acme:/acme
-      security_opt:
-        - no-new-privileges:true
-      networks:
-        - hy2-internal
+  hysteria:
+    image: tobyxdd/hysteria:latest
+    restart: unless-stopped
+    command: ["server", "-c", "/etc/hysteria.yaml"]
+    environment:
+      HYSTERIA_ACME_DIR: /acme
+    depends_on:
+      adapter:
+        condition: service_healthy
+    ports:
+      - "${HY2_PUBLIC_PORT:-8443}:8443/udp"
+      - "127.0.0.1:${HY2_STATS_DEBUG_PORT:-19999}:9999/tcp"
+    volumes:
+      - ./hysteria.docker.yaml:/etc/hysteria.yaml:ro
+      - ${HY2_CERT_DIR:-/etc/letsencrypt}:/certs:ro
+      - hysteria-acme:/acme
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - hy2-internal
 
 networks:
   hy2-internal:
@@ -54,4 +54,3 @@ networks:
 volumes:
   adapter-state:
   hysteria-acme:
-  
