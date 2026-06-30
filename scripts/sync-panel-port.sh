@@ -7,6 +7,7 @@ PROJECT_DIR="${PROJECT_DIR:-$(cd -- "${SCRIPT_DIR}/.." && pwd)}"
 ENV_FILE="${ENV_FILE:-${PROJECT_DIR}/.env}"
 COMPOSE_FILE="${COMPOSE_FILE:-${PROJECT_DIR}/docker-compose.hy2.yaml}"
 COMPOSE_SERVICE="${COMPOSE_SERVICE:-hysteria}"
+HY2_CONTAINER_PORT="${HY2_CONTAINER_PORT:-8443}"
 LOCK_FILE="${LOCK_FILE:-${PROJECT_DIR}/.port-sync.lock}"
 
 log() {
@@ -49,6 +50,7 @@ require_command docker
 require_command flock
 require_command jq
 
+[[ "${PROJECT_DIR}" == /* ]] || fail "PROJECT_DIR must be an absolute path"
 [[ -f "${ENV_FILE}" ]] || fail "env file not found: ${ENV_FILE}"
 [[ -f "${COMPOSE_FILE}" ]] || fail "compose file not found: ${COMPOSE_FILE}"
 
@@ -59,6 +61,8 @@ if ! flock -n 9; then
 fi
 
 docker compose version >/dev/null 2>&1 || fail "docker compose plugin is unavailable"
+[[ "${HY2_CONTAINER_PORT}" =~ ^[0-9]+$ ]] && (( HY2_CONTAINER_PORT >= 1 && HY2_CONTAINER_PORT <= 65535 )) || \
+    fail "HY2_CONTAINER_PORT must be an integer from 1 to 65535"
 
 panel_base_url="${SSPANEL_BASE_URL:-$(read_env SSPANEL_BASE_URL)}"
 panel_key="${SSPANEL_MU_KEY:-$(read_env SSPANEL_MU_KEY)}"
@@ -68,6 +72,7 @@ allowed_max="${HY2_ALLOWED_PORT_MAX:-$(read_env HY2_ALLOWED_PORT_MAX)}"
 current_port="$(read_env HY2_PUBLIC_PORT)"
 adapter_token="${ADAPTER_AUTH_TOKEN:-$(read_env ADAPTER_AUTH_TOKEN)}"
 adapter_debug_port="${ADAPTER_DEBUG_PORT:-$(read_env ADAPTER_DEBUG_PORT)}"
+adapter_admin_url="${ADAPTER_ADMIN_URL:-$(read_env ADAPTER_ADMIN_URL)}"
 
 [[ -n "${panel_base_url}" ]] || fail "SSPANEL_BASE_URL is empty"
 [[ -n "${panel_key}" ]] || fail "SSPANEL_MU_KEY is empty"
@@ -76,6 +81,7 @@ adapter_debug_port="${ADAPTER_DEBUG_PORT:-$(read_env ADAPTER_DEBUG_PORT)}"
 [[ -n "${adapter_debug_port}" ]] || adapter_debug_port=18080
 [[ "${adapter_debug_port}" =~ ^[0-9]+$ ]] && (( adapter_debug_port >= 1 && adapter_debug_port <= 65535 )) || \
     fail "ADAPTER_DEBUG_PORT must be an integer from 1 to 65535"
+[[ -n "${adapter_admin_url}" ]] || adapter_admin_url="http://127.0.0.1:${adapter_debug_port}/admin/collect"
 [[ "${allowed_min}" =~ ^[0-9]+$ ]] || allowed_min=1024
 [[ "${allowed_max}" =~ ^[0-9]+$ ]] || allowed_max=65535
 (( allowed_min >= 1 && allowed_min <= allowed_max && allowed_max <= 65535 )) || \
@@ -100,12 +106,27 @@ desired_port="$(jq -er '
 (( desired_port >= allowed_min && desired_port <= allowed_max )) || \
     fail "panel port ${desired_port} is outside allowed range ${allowed_min}-${allowed_max}"
 
-if [[ "${current_port}" == "${desired_port}" ]]; then
+published_address=""
+if published_address="$(
+    cd -- "${PROJECT_DIR}"
+    docker compose -f "${COMPOSE_FILE}" port --protocol udp "${COMPOSE_SERVICE}" "${HY2_CONTAINER_PORT}" 2>/dev/null
+)"; then
+    published_address="$(printf '%s\n' "${published_address}" | head -n 1)"
+fi
+actual_port="${published_address##*:}"
+[[ "${actual_port}" =~ ^[0-9]+$ ]] || actual_port=""
+
+if [[ "${current_port}" == "${desired_port}" && "${actual_port}" == "${desired_port}" ]]; then
     log "port unchanged: ${desired_port}/udp"
     exit 0
 fi
 
-if command -v ss >/dev/null 2>&1 && ss -H -lun "sport = :${desired_port}" | grep -q .; then
+if [[ "${current_port}" == "${desired_port}" ]]; then
+    log "env requests ${desired_port}/udp but Docker publishes ${actual_port:-none}; repairing"
+fi
+
+if [[ "${actual_port}" != "${desired_port}" ]] && command -v ss >/dev/null 2>&1 && \
+    ss -H -lun "sport = :${desired_port}" | grep -q .; then
     fail "UDP port ${desired_port} is already in use"
 fi
 
@@ -113,7 +134,7 @@ log "collecting pending traffic before port change"
 curl --fail --silent --show-error --max-time 20 \
     --request POST \
     --header "X-Adapter-Token: ${adapter_token}" \
-    "http://127.0.0.1:${adapter_debug_port}/admin/collect" >/dev/null || \
+    "${adapter_admin_url}" >/dev/null || \
     fail "failed to collect traffic; port was not changed"
 
 env_backup="$(mktemp "${ENV_FILE}.backup.XXXXXX")"

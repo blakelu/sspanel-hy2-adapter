@@ -58,6 +58,13 @@ cat >"${MOCK_BIN}/docker" <<'EOF'
 if [[ "${1:-}" == "compose" && "${2:-}" == "version" ]]; then
     exit 0
 fi
+if [[ " $* " == *" port --protocol udp "* ]]; then
+    if [[ -n "${MOCK_PUBLISHED_PORT:-}" ]]; then
+        printf '0.0.0.0:%s\n' "${MOCK_PUBLISHED_PORT}"
+        exit 0
+    fi
+    exit 1
+fi
 printf '%s\n' "$*" >>"${MOCK_DOCKER_LOG}"
 if [[ "${MOCK_DOCKER_FAIL_ONCE:-0}" == "1" && ! -e "${MOCK_DOCKER_FAIL_MARKER}" ]]; then
     : >"${MOCK_DOCKER_FAIL_MARKER}"
@@ -78,20 +85,30 @@ run_sync() {
     MOCK_CURL_LOG="${TEST_DIR}/curl.log" \
     MOCK_PANEL_RESPONSE="${MOCK_PANEL_RESPONSE}" \
     MOCK_COLLECT_FAIL="${MOCK_COLLECT_FAIL:-0}" \
+    MOCK_PUBLISHED_PORT="${MOCK_PUBLISHED_PORT:-}" \
     MOCK_DOCKER_FAIL_ONCE="${MOCK_DOCKER_FAIL_ONCE:-0}" \
     MOCK_DOCKER_FAIL_MARKER="${TEST_DIR}/docker-failed" \
     "${SYNC_SCRIPT}"
 }
 
 MOCK_PANEL_RESPONSE='{"ret":1,"data":{"custom_config":{"offset_port_node":"8555"}}}'
+MOCK_PUBLISHED_PORT=8443
 run_sync
 grep -qx 'HY2_PUBLIC_PORT=8555' "${ENV_FILE}"
 grep -q -- '--force-recreate hysteria' "${DOCKER_LOG}"
 grep -qx 'collect' "${TEST_DIR}/curl.log"
 
 : >"${DOCKER_LOG}"
+MOCK_PUBLISHED_PORT=8555
 run_sync
 [[ ! -s "${DOCKER_LOG}" ]]
+
+: >"${DOCKER_LOG}"
+MOCK_PUBLISHED_PORT=8443
+run_sync
+grep -q -- '--force-recreate hysteria' "${DOCKER_LOG}"
+grep -qx 'HY2_PUBLIC_PORT=8555' "${ENV_FILE}"
+MOCK_PUBLISHED_PORT=8555
 
 MOCK_PANEL_RESPONSE='{"ret":1,"data":{"custom_config":{"offset_port_node":9999}}}'
 if run_sync; then
@@ -102,6 +119,7 @@ grep -qx 'HY2_PUBLIC_PORT=8555' "${ENV_FILE}"
 
 MOCK_PANEL_RESPONSE='{"ret":1,"data":{"custom_config":{"offset_port_node":8666}}}'
 MOCK_COLLECT_FAIL=1
+MOCK_PUBLISHED_PORT=8555
 : >"${DOCKER_LOG}"
 if run_sync; then
     printf 'expected failed traffic collection to return an error\n' >&2

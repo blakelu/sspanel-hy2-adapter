@@ -73,7 +73,7 @@ export SSPANEL_DB_PASSWORD='数据库密码'
 
 ### 3. Hysteria 2
 
-将 [deploy/hysteria-snippet.yaml](deploy/hysteria-snippet.yaml) 合并进 HY2 服务端配置。关键配置如下：
+仅在 HY2 直接运行于宿主机时，才需要将以下内容合并进服务端配置：
 
 ```yaml
 auth:
@@ -127,19 +127,19 @@ chmod 600 hysteria.docker.yaml .env
 
 ```bash
 docker compose -f docker-compose.hy2.yaml up -d --build
-docker compose -f docker-compose.hy2.yaml logs -f adapter hysteria
+docker compose -f docker-compose.hy2.yaml logs -f adapter hysteria port-sync
 ```
 
 这套部署中，HY2 通过 `adapter:8080` 调用认证，Adapter 通过 `hysteria:9999` 读取统计；`8080` 和 `9999` 不对公网开放。宿主机调试地址分别为 `127.0.0.1:18080` 和 `127.0.0.1:19999`，公网客户端连接端口默认为 `8443/UDP`。
 
 ### 从面板自动同步 Docker 对外端口
 
-Docker 发布端口不能热更新，因此项目提供宿主机同步脚本
-[scripts/sync-panel-port.sh](scripts/sync-panel-port.sh)。脚本读取节点
+Docker 发布端口不能热更新，因此 Compose 中包含常驻的 `port-sync` 服务。它每隔
+`PORT_SYNC_INTERVAL` 秒运行 [scripts/sync-panel-port.sh](scripts/sync-panel-port.sh)，读取节点
 `custom_config.offset_port_node`，原子更新 `.env` 的 `HY2_PUBLIC_PORT`，并且只重建
 `hysteria` 服务。重建前脚本会通过 Adapter 的受保护接口强制采集一次 HY2 流量；
 采集失败时不会切换端口。Adapter、流量 checkpoint 和 ACME 数据卷不会被重建。
-Compose 已将 `HYSTERIA_ACME_DIR=/acme` 挂载到 `hy2-acme` 持久卷，避免每次端口
+Compose 已将 `HYSTERIA_ACME_DIR=/acme` 挂载到 `hysteria-acme` 持久卷，避免每次端口
 变化都重新申请证书。
 
 面板节点配置示例：
@@ -155,39 +155,49 @@ Compose 已将 `HYSTERIA_ACME_DIR=/acme` 挂载到 `hy2-acme` 持久卷，避免
 
 没有额外端口转发时，`offset_port_user` 与 `offset_port_node` 应保持一致：前者用于订阅下发，后者驱动 Docker 宿主机 UDP 端口。
 
-`.env` 必须补充与 Adapter 配置相同的节点 ID，并建议限定允许端口范围。
-脚本还会使用现有的 `ADAPTER_AUTH_TOKEN` 和 `ADAPTER_DEBUG_PORT` 调用本机 Adapter：
+`.env` 必须配置服务器上的项目绝对路径、与 Adapter 相同的节点 ID，并建议限定允许
+端口范围：
 
 ```dotenv
+HOST_PROJECT_DIR=/home/ubuntu/sspanel-hy2-adapter
+PORT_SYNC_INTERVAL=30
 SSPANEL_NODE_ID=11
-HY2_ALLOWED_PORT_MIN=8000
-HY2_ALLOWED_PORT_MAX=9000
+HY2_ALLOWED_PORT_MIN=10000
+HY2_ALLOWED_PORT_MAX=20000
 ```
+
+`HOST_PROJECT_DIR` 必须是绝对路径。`port-sync` 会把该目录挂载到容器中的相同路径，
+供容器内的 Compose 正确解析 `hysteria.docker.yaml` 等绑定挂载。
 
 执行同步前，Adapter 和 Hysteria 必须已启动。`ADAPTER_DEBUG_PORT` 仅绑定
 `127.0.0.1`，不要将该管理入口暴露到公网。同步接口需要等待 stats 采集和面板上报，
 请将 `config.docker-hy2.yaml` 的 `server.write_timeout` 设置为至少 `15s`。
 
-依赖：Linux、`curl`、`docker compose`、`flock`、`jq`。先手工验证一次：
+`port-sync` 镜像已包含 Docker CLI、Compose、`curl`、`flock` 和 `jq`，宿主机不再需要
+安装同步脚本依赖。启动并查看日志：
 
 ```bash
-sudo ./scripts/sync-panel-port.sh
+docker compose -f docker-compose.hy2.yaml up -d --build port-sync
+docker compose -f docker-compose.hy2.yaml logs -f port-sync
 ```
 
-启用每 30 秒同步：
+从旧 systemd 定时器迁移时，先停用并删除旧服务，避免两个调度器同时工作：
 
 ```bash
-sudo install -m 0644 deploy/sspanel-hy2-port-sync.service /etc/systemd/system/
-sudo install -m 0644 deploy/sspanel-hy2-port-sync.timer /etc/systemd/system/
+sudo systemctl disable --now sspanel-hy2-port-sync.timer
+sudo rm -f /etc/systemd/system/sspanel-hy2-port-sync.service \
+  /etc/systemd/system/sspanel-hy2-port-sync.timer
 sudo systemctl daemon-reload
-sudo systemctl enable --now sspanel-hy2-port-sync.timer
-sudo systemctl start sspanel-hy2-port-sync.service
-sudo journalctl -u sspanel-hy2-port-sync.service -n 50 --no-pager
 ```
 
-示例 unit 假定项目位于 `/opt/sspanel-hy2-adapter`；路径不同必须先修改 service。端口变化会短暂中断现有 HY2 连接。系统防火墙和云安全组也必须预先允许 `HY2_ALLOWED_PORT_MIN` 到 `HY2_ALLOWED_PORT_MAX` 的 UDP 范围，否则 Docker 已切换但公网仍不可达。
+修改 `.env` 中的节点、密钥或端口参数后无需重建 `port-sync`，下一轮会重新读取文件；
+需要立即同步时执行 `docker compose -f docker-compose.hy2.yaml restart port-sync`。
+修改 `HOST_PROJECT_DIR` 或 `PORT_SYNC_INTERVAL` 后则需要重新创建该容器。端口变化会
+短暂中断现有 HY2 连接。系统防火墙和云安全组必须预先允许 `HY2_ALLOWED_PORT_MIN` 到
+`HY2_ALLOWED_PORT_MAX` 的 UDP 范围，否则 Docker 已切换但公网仍不可达。
 
-systemd 示例见 [deploy/sspanel-hy2-adapter.service](deploy/sspanel-hy2-adapter.service)。使用该文件时，将 `hy2.state_file` 设置为 `/var/lib/sspanel-hy2-adapter/traffic-state.json`。
+安全边界：`port-sync` 挂载了 `/var/run/docker.sock`，因此具备控制宿主机 Docker 的
+高权限。不要向该镜像加入不受信任的代码，也不要将 Docker API 暴露到网络。
 
 健康检查：
 

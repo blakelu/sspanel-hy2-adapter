@@ -1,0 +1,9 @@
+FROM docker:29.6.1-cli
+
+RUN apk add --no-cache bash curl iproute2 jq util-linux
+
+COPY scripts/sync-panel-port.sh /usr/local/bin/sync-panel-port.sh
+COPY scripts/run-port-sync.sh /usr/local/bin/run-port-sync.sh
+RUN chmod 0755 /usr/local/bin/sync-panel-port.sh /usr/local/bin/run-port-sync.sh
+
+ENTRYPOINT ["/usr/local/bin/run-port-sync.sh"]

@@ -47,6 +47,28 @@ services:
     networks:
       - hy2-internal
 
+  port-sync:
+    build:
+      context: .
+      dockerfile: Dockerfile.port-sync
+    restart: unless-stopped
+    depends_on:
+      adapter:
+        condition: service_healthy
+    environment:
+      PROJECT_DIR: ${HOST_PROJECT_DIR:?set HOST_PROJECT_DIR in .env}
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-sspanel-hy2-adapter}
+      PORT_SYNC_INTERVAL: ${PORT_SYNC_INTERVAL:-30}
+    working_dir: ${HOST_PROJECT_DIR:?set HOST_PROJECT_DIR in .env}
+    network_mode: host
+    volumes:
+      # 需要控制宿主机 Docker 才能使用新端口重建 hysteria。
+      - /var/run/docker.sock:/var/run/docker.sock
+      # 必须以相同绝对路径挂载，嵌套 Compose 才能正确解析绑定挂载。
+      - ${HOST_PROJECT_DIR:?set HOST_PROJECT_DIR in .env}:${HOST_PROJECT_DIR:?set HOST_PROJECT_DIR in .env}
+    security_opt:
+      - no-new-privileges:true
+
 networks:
   hy2-internal:
     driver: bridge
