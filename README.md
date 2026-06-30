@@ -52,10 +52,20 @@ chmod 600 hysteria.docker.yaml .env
 
 部署前需要完成：
 
-1. 填写 `.env` 的面板地址、`SSPANEL_NODE_ID`、Adapter、Stats 密钥和 `HY2_CERT_DIR`。
+1. 填写 `.env` 的面板地址、`SSPANEL_NODE_ID`、Adapter 和 Stats 密钥。
 2. 确认 `config.docker-hy2.yaml` 的 `panel.node_id` 为 `${SSPANEL_NODE_ID}`。
-3. 将 `hysteria.docker.yaml` 中的域名、`REPLACE_ADAPTER_AUTH_TOKEN`、`REPLACE_HY2_STATS_SECRET` 替换为实际值。
+3. 将 `hysteria.docker.yaml` 中的域名、ACME 邮箱、Cloudflare API Token、`REPLACE_ADAPTER_AUTH_TOKEN` 和 `REPLACE_HY2_STATS_SECRET` 替换为实际值。
 4. 在防火墙和云安全组开放 `${HY2_PUBLIC_PORT:-8443}/UDP`。
+
+Cloudflare API Token 建议仅授予目标 Zone 的 `Zone:Read` 和 `DNS:Edit`
+权限。Hysteria 使用 DNS-01 申请和续期证书，不需要对公网开放 TCP 80/443。
+HY2 域名的 A/AAAA 记录必须指向节点服务器；未使用 Cloudflare Spectrum 时，
+该记录应设为“仅 DNS”，不要开启普通橙云代理。
+
+Hysteria 内置的 CertMagic 会每 10 分钟检查托管证书，证书进入有效期的
+最后三分之一时开始自动续签。续签失败后后台会继续定期尝试；容器启动时
+如果证书缺失、即将过期或已过期，也会在服务启动前申请新证书。
+ACME 账户和证书保存在 `hysteria-acme` 持久卷中，不需要另外配置 cron。
 
 启动：
 

@@ -40,7 +40,6 @@ services:
       - "127.0.0.1:${HY2_STATS_DEBUG_PORT:-19999}:9999/tcp"
     volumes:
       - ./hysteria.docker.yaml:/etc/hysteria.yaml:ro
-      - ${HY2_CERT_DIR:-/etc/letsencrypt}:/certs:ro
       - hysteria-acme:/acme
     security_opt:
       - no-new-privileges:true

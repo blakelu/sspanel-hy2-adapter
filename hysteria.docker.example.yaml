@@ -2,10 +2,18 @@
 # 这里的密钥必须写入实际值；Hysteria 不使用 Adapter 的配置展开逻辑。
 listen: :8443
 
-tls:
-  # Compose 将 HY2_CERT_DIR 挂载为容器内 /certs。
-  cert: /certs/live/REPLACE_DOMAIN/fullchain.pem
-  key: /certs/live/REPLACE_DOMAIN/privkey.pem
+acme:
+  # Hysteria 会在后台定期检查并自动续期，ACME 数据由 Compose 持久化到 /acme。
+  domains:
+    - REPLACE_DOMAIN
+  email: REPLACE_ACME_EMAIL
+  ca: letsencrypt
+  type: dns
+  dns:
+    name: cloudflare
+    config:
+      # Token 建议仅授予目标 Zone 的 Zone:Read 和 DNS:Edit 权限。
+      cloudflare_api_token: REPLACE_CLOUDFLARE_API_TOKEN
 
 auth:
   type: http
