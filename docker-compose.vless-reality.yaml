@@ -24,7 +24,7 @@ services:
     depends_on:
       - xray
     ports:
-      - "127.0.0.1:${ADAPTER_DEBUG_PORT:-18080}:8080/tcp"
+      - "127.0.0.1:${VLESS_ADAPTER_DEBUG_PORT:-18081}:8080/tcp"
     volumes:
       - ./config.docker-vless-reality.yaml:/etc/sspanel-hy2-adapter/config.yaml:ro
       - adapter-state:/app/data
@@ -55,6 +55,7 @@ services:
       COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-sspanel-hy2-adapter}
       PORT_SYNC_MODE: vless
       PORT_SYNC_INTERVAL: ${PORT_SYNC_INTERVAL:-30}
+      ADAPTER_DEBUG_PORT: ${VLESS_ADAPTER_DEBUG_PORT:-18081}
     working_dir: ${HOST_PROJECT_DIR:?set HOST_PROJECT_DIR in .env}
     network_mode: host
     volumes:

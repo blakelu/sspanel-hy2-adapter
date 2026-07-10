@@ -245,6 +245,7 @@ HOST_PROJECT_DIR=/opt/sspanel-hy2-adapter
 PORT_SYNC_INTERVAL=30
 VLESS_ALLOWED_PORT_MIN=1024
 VLESS_ALLOWED_PORT_MAX=65535
+VLESS_ADAPTER_DEBUG_PORT=18081
 ```
 
 `HOST_PROJECT_DIR` 必须是服务器上本项目的绝对路径。建议把允许端口范围收紧到防火墙和云安全组已经放行的 TCP 范围。
@@ -268,7 +269,7 @@ docker compose -f docker-compose.vless-reality.yaml ps
 docker compose -f docker-compose.vless-reality.yaml logs -f adapter xray port-sync
 ```
 
-只需对公网开放 `${VLESS_PUBLIC_PORT:-443}/TCP`。Xray gRPC API `10085` 不映射到宿主机，Adapter 调试端口默认只绑定 `127.0.0.1:18080`。
+只需对公网开放 `${VLESS_PUBLIC_PORT:-443}/TCP`。Xray gRPC API `10085` 不映射到宿主机，VLESS Adapter 调试端口默认只绑定 `127.0.0.1:18081`，避免与 HY2 默认使用的 `18080` 冲突。
 
 ### 从面板自动切换 VLESS TCP 端口
 
