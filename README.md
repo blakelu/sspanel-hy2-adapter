@@ -233,6 +233,35 @@ openssl rand -hex 8
 
 REALITY 会把认证失败的连接转发到 `target`。不要随意选择可能使节点成为公共 CDN 转发器的目标；上线前可在节点上执行 `xray tls ping 目标域名` 检查握手兼容性。
 
+#### REALITY 在目标站证书阶段中断
+
+伪装目标支持 TLS 1.3 并不代表一定适合 REALITY。目标站的证书链可能随时变化；如果
+TLS Certificate 握手记录超过当前 REALITY 实现的 8192 字节缓冲区，客户端会在完成
+TCP 连接后立即断开。2026 年 7 月实际排查中，`www.microsoft.com` 返回了 8273 字节的
+Certificate 记录，触发了这个问题，因此不要把该域名视为始终可用的固定默认值。
+
+典型调试日志如下：
+
+```text
+hs.c.conn == conn: true
+Certificate: 8273
+hs.c.isHandshakeComplete.Load(): false
+REALITY: processed invalid connection: handshake did not complete successfully
+```
+
+其中 `hs.c.conn == conn: true` 表示 REALITY 公钥、short ID、客户端时间和版本等认证条件
+已经通过；此时继续更换 UUID 或密钥不能解决目标站 TLS 握手记录过大的问题。临时把
+`log.loglevel` 改为 `debug`、把 `realitySettings.show` 改为 `true`，重建 Xray 后才能看到
+上述明细。使用 `xray tls ping 候选域名` 检查新目标，并选择从 VPS 可直连、支持 TLS 1.3
+且证书握手兼容的站点，例如先测试 `www.apple.com`。更换时必须同时更新：
+
+- 服务端 `realitySettings.target`；
+- 服务端 `realitySettings.serverNames`；
+- 面板或客户端配置中的 `sni`。
+
+三处域名通常保持一致。更换伪装目标不需要重新生成 UUID、REALITY 密钥或 short ID。
+排查完成后应把 `show` 和日志级别恢复为 `false`、`warning`，避免长期输出握手调试信息。
+
 在 `.env` 中至少设置：
 
 ```dotenv
