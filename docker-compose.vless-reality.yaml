@@ -1,0 +1,71 @@
+services:
+  xray:
+    image: ghcr.io/xtls/xray-core:26.2.6
+    restart: unless-stopped
+    command: ["-config", "/usr/local/etc/xray/config.json"]
+    ports:
+      - "${VLESS_PUBLIC_PORT:-443}:443/tcp"
+    volumes:
+      - ./xray.docker.json:/usr/local/etc/xray/config.json:ro
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - vless-internal
+
+  adapter:
+    build:
+      context: .
+      args:
+        VERSION: local
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      - xray
+    ports:
+      - "127.0.0.1:${ADAPTER_DEBUG_PORT:-18080}:8080/tcp"
+    volumes:
+      - ./config.docker-vless-reality.yaml:/etc/sspanel-hy2-adapter/config.yaml:ro
+      - adapter-state:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+    networks:
+      - vless-internal
+
+  port-sync:
+    build:
+      context: .
+      dockerfile: Dockerfile.port-sync
+    restart: unless-stopped
+    depends_on:
+      adapter:
+        condition: service_healthy
+    environment:
+      PROJECT_DIR: ${HOST_PROJECT_DIR:?set HOST_PROJECT_DIR in .env}
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-sspanel-hy2-adapter}
+      PORT_SYNC_MODE: vless
+      PORT_SYNC_INTERVAL: ${PORT_SYNC_INTERVAL:-30}
+    working_dir: ${HOST_PROJECT_DIR:?set HOST_PROJECT_DIR in .env}
+    network_mode: host
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${HOST_PROJECT_DIR:?set HOST_PROJECT_DIR in .env}:${HOST_PROJECT_DIR:?set HOST_PROJECT_DIR in .env}
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  vless-internal:
+    driver: bridge
+
+volumes:
+  adapter-state:

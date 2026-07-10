@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strings"
@@ -29,6 +30,7 @@ type Config struct {
 	Panel      PanelConfig      `yaml:"panel"`
 	UserSource UserSourceConfig `yaml:"user_source"`
 	HY2        HY2Config        `yaml:"hy2"`
+	Xray       XrayConfig       `yaml:"xray"`
 	Log        LogConfig        `yaml:"log"`
 }
 
@@ -69,9 +71,21 @@ type DatabaseConfig struct {
 }
 
 type HY2Config struct {
+	Enabled      bool     `yaml:"enabled"`
 	StatsURL     string   `yaml:"stats_url"`
 	StatsSecret  string   `yaml:"stats_secret"`
 	Timeout      Duration `yaml:"timeout"`
+	PollInterval Duration `yaml:"poll_interval"`
+	StateFile    string   `yaml:"state_file"`
+	RunOnStartup bool     `yaml:"run_on_startup"`
+}
+
+type XrayConfig struct {
+	Enabled      bool     `yaml:"enabled"`
+	APIAddress   string   `yaml:"api_address"`
+	InboundTag   string   `yaml:"inbound_tag"`
+	Timeout      Duration `yaml:"timeout"`
+	SyncInterval Duration `yaml:"sync_interval"`
 	PollInterval Duration `yaml:"poll_interval"`
 	StateFile    string   `yaml:"state_file"`
 	RunOnStartup bool     `yaml:"run_on_startup"`
@@ -107,10 +121,20 @@ func Default() Config {
 			},
 		},
 		HY2: HY2Config{
+			Enabled:      true,
 			StatsURL:     "http://127.0.0.1:9999",
 			Timeout:      Duration(5 * time.Second),
 			PollInterval: Duration(60 * time.Second),
 			StateFile:    "./data/traffic-state.json",
+			RunOnStartup: true,
+		},
+		Xray: XrayConfig{
+			APIAddress:   "127.0.0.1:10085",
+			InboundTag:   "vless-reality",
+			Timeout:      Duration(5 * time.Second),
+			SyncInterval: Duration(30 * time.Second),
+			PollInterval: Duration(60 * time.Second),
+			StateFile:    "./data/xray-traffic-state.json",
 			RunOnStartup: true,
 		},
 		Log: LogConfig{Level: "info"},
@@ -132,7 +156,9 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 	cfg.Panel.BaseURL = strings.TrimRight(cfg.Panel.BaseURL, "/")
-	cfg.HY2.StatsURL = strings.TrimRight(cfg.HY2.StatsURL, "/")
+	if cfg.HY2.Enabled {
+		cfg.HY2.StatsURL = strings.TrimRight(cfg.HY2.StatsURL, "/")
+	}
 	return cfg, nil
 }
 
@@ -199,14 +225,36 @@ func (c Config) Validate() error {
 	default:
 		errs = append(errs, fmt.Errorf("user_source.mode must be api or database, got %q", c.UserSource.Mode))
 	}
-	if err := validateHTTPURL("hy2.stats_url", c.HY2.StatsURL); err != nil {
-		errs = append(errs, err)
+	if !c.HY2.Enabled && !c.Xray.Enabled {
+		errs = append(errs, errors.New("at least one of hy2.enabled or xray.enabled must be true"))
 	}
-	if c.HY2.Timeout.Value() <= 0 || c.HY2.PollInterval.Value() <= 0 {
-		errs = append(errs, errors.New("hy2 timeout and poll_interval must be positive"))
+	if c.HY2.Enabled {
+		if err := validateHTTPURL("hy2.stats_url", c.HY2.StatsURL); err != nil {
+			errs = append(errs, err)
+		}
+		if c.HY2.Timeout.Value() <= 0 || c.HY2.PollInterval.Value() <= 0 {
+			errs = append(errs, errors.New("hy2 timeout and poll_interval must be positive"))
+		}
+		if c.HY2.StateFile == "" {
+			errs = append(errs, errors.New("hy2.state_file is required"))
+		}
 	}
-	if c.HY2.StateFile == "" {
-		errs = append(errs, errors.New("hy2.state_file is required"))
+	if c.Xray.Enabled {
+		if _, _, err := net.SplitHostPort(c.Xray.APIAddress); err != nil {
+			errs = append(errs, errors.New("xray.api_address must be a host:port address"))
+		}
+		if c.Xray.InboundTag == "" {
+			errs = append(errs, errors.New("xray.inbound_tag is required"))
+		}
+		if c.Xray.Timeout.Value() <= 0 || c.Xray.SyncInterval.Value() <= 0 || c.Xray.PollInterval.Value() <= 0 {
+			errs = append(errs, errors.New("xray timeout, sync_interval, and poll_interval must be positive"))
+		}
+		if c.Xray.StateFile == "" {
+			errs = append(errs, errors.New("xray.state_file is required"))
+		}
+	}
+	if c.HY2.Enabled && c.Xray.Enabled && c.HY2.StateFile == c.Xray.StateFile {
+		errs = append(errs, errors.New("hy2.state_file and xray.state_file must be different"))
 	}
 	if c.Log.Level != "debug" && c.Log.Level != "info" && c.Log.Level != "warn" && c.Log.Level != "error" {
 		errs = append(errs, fmt.Errorf("unsupported log.level %q", c.Log.Level))

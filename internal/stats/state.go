@@ -7,23 +7,23 @@ import (
 	"os"
 	"path/filepath"
 
-	"sspanel-uim-hy2-adapter/internal/hy2"
+	"sspanel-uim-hy2-adapter/internal/traffic"
 )
 
 const stateVersion = 1
 
 type diskState struct {
-	Version  int                    `json:"version"`
-	Counters map[string]hy2.Counter `json:"counters"`
+	Version  int                        `json:"version"`
+	Counters map[string]traffic.Counter `json:"counters"`
 }
 
 type State struct {
 	path     string
-	counters map[string]hy2.Counter
+	counters map[string]traffic.Counter
 }
 
 func LoadState(path string) (*State, error) {
-	s := &State{path: path, counters: make(map[string]hy2.Counter)}
+	s := &State{path: path, counters: make(map[string]traffic.Counter)}
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return s, nil
@@ -44,11 +44,11 @@ func LoadState(path string) (*State, error) {
 	return s, nil
 }
 
-func (s *State) Snapshot() map[string]hy2.Counter {
+func (s *State) Snapshot() map[string]traffic.Counter {
 	return cloneCounters(s.counters)
 }
 
-func (s *State) Replace(counters map[string]hy2.Counter) {
+func (s *State) Replace(counters map[string]traffic.Counter) {
 	s.counters = cloneCounters(counters)
 }
 
@@ -85,8 +85,8 @@ func (s *State) Save() error {
 	return nil
 }
 
-func cloneCounters(in map[string]hy2.Counter) map[string]hy2.Counter {
-	out := make(map[string]hy2.Counter, len(in))
+func cloneCounters(in map[string]traffic.Counter) map[string]traffic.Counter {
+	out := make(map[string]traffic.Counter, len(in))
 	for id, counter := range in {
 		out[id] = counter
 	}

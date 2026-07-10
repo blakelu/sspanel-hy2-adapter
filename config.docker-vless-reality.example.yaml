@@ -1,11 +1,9 @@
-# 复制为 config.docker-hy2.yaml。该配置用于 Adapter 与 HY2 都运行在本 Compose 中的场景。
+# 复制为 config.docker-vless-reality.yaml。
 server:
-  # 必须监听容器网卡，hysteria 容器才能通过 adapter:8080 访问。
   listen: 0.0.0.0:8080
   auth_path: /auth
   auth_token: ${ADAPTER_AUTH_TOKEN}
   read_timeout: 5s
-  # 管理接口在切换端口前会串行采集 HY2 stats 并上报面板，需覆盖两次后端请求。
   write_timeout: 15s
 
 panel:
@@ -17,6 +15,7 @@ panel:
   insecure_skip_verify: false
 
 user_source:
+  # API 模式会使用 /mod_mu/users 返回的当前可用用户 UUID。
   mode: api
   credential_fields:
     - uuid
@@ -30,17 +29,18 @@ user_source:
     conn_max_lifetime: 5m
 
 hy2:
-  enabled: true
-  # 使用 Compose 服务名访问独立 HY2，不能写 127.0.0.1。
-  stats_url: http://hysteria:9999
-  stats_secret: ${HY2_STATS_SECRET}
-  timeout: 5s
-  poll_interval: 60s
-  state_file: ./data/traffic-state.json
-  run_on_startup: true
+  enabled: false
 
 xray:
-  enabled: false
+  enabled: true
+  # Xray API 只能通过 Compose 内网访问，不要映射到公网。
+  api_address: xray:10085
+  inbound_tag: vless-reality
+  timeout: 5s
+  sync_interval: 30s
+  poll_interval: 60s
+  state_file: ./data/xray-traffic-state.json
+  run_on_startup: true
 
 log:
   level: info

@@ -24,6 +24,7 @@ type API struct {
 
 	mu          sync.RWMutex
 	users       map[string]int64
+	syncUsers   []panel.User
 	ambiguous   map[string]struct{}
 	etag        string
 	lastSuccess time.Time
@@ -94,12 +95,22 @@ func (a *API) Refresh(ctx context.Context) error {
 	}
 	a.mu.Lock()
 	a.users = index
+	a.syncUsers = append([]panel.User(nil), users...)
 	a.ambiguous = ambiguous
 	a.etag = newETag
 	a.lastSuccess = now
 	a.mu.Unlock()
 	a.logger.Info("panel users refreshed", "users", len(users), "credentials", len(index), "ambiguous", len(ambiguous))
 	return nil
+}
+
+func (a *API) Users(_ context.Context) ([]panel.User, error) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.lastSuccess.IsZero() || time.Since(a.lastSuccess) > a.maxStale {
+		return nil, errors.New("panel user cache is stale")
+	}
+	return append([]panel.User(nil), a.syncUsers...), nil
 }
 
 func (a *API) Authenticate(_ context.Context, credential string) (int64, bool, error) {

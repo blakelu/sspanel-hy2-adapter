@@ -10,12 +10,12 @@ import (
 	"sync"
 	"time"
 
-	"sspanel-uim-hy2-adapter/internal/hy2"
 	"sspanel-uim-hy2-adapter/internal/panel"
+	"sspanel-uim-hy2-adapter/internal/traffic"
 )
 
 type TrafficReader interface {
-	FetchTraffic(ctx context.Context) (map[string]hy2.Counter, error)
+	FetchTraffic(ctx context.Context) (map[string]traffic.Counter, error)
 }
 
 type TrafficReporter interface {
@@ -87,12 +87,12 @@ func (c *Collector) Collect(ctx context.Context) error {
 	return nil
 }
 
-func trafficDelta(previous, current map[string]hy2.Counter, logger *slog.Logger) []panel.Traffic {
+func trafficDelta(previous, current map[string]traffic.Counter, logger *slog.Logger) []panel.Traffic {
 	result := make([]panel.Traffic, 0, len(current))
 	for rawID, now := range current {
 		id, err := strconv.ParseInt(rawID, 10, 64)
 		if err != nil || id <= 0 {
-			logger.Warn("ignoring HY2 traffic for non-numeric client ID", "id", rawID)
+			logger.Warn("ignoring traffic for non-numeric client ID", "id", rawID)
 			continue
 		}
 		before := previous[rawID]
@@ -111,10 +111,10 @@ func counterDelta(previous, current uint64) uint64 {
 	if current >= previous {
 		return current - previous
 	}
-	// HY2 counters reset when the process restarts (or another caller clears them).
+	// Protocol counters reset when the server restarts (or another caller clears them).
 	return current
 }
 
 func (c *Collector) String() string {
-	return fmt.Sprintf("HY2 traffic collector (interval %s)", c.interval)
+	return fmt.Sprintf("traffic collector (interval %s)", c.interval)
 }

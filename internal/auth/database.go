@@ -8,6 +8,8 @@ import (
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
+
+	"sspanel-uim-hy2-adapter/internal/panel"
 )
 
 var databaseCredentialFields = map[string]string{
@@ -18,10 +20,11 @@ var databaseCredentialFields = map[string]string{
 }
 
 type Database struct {
-	db     *sql.DB
-	query  string
-	args   int
-	nodeID int64
+	db        *sql.DB
+	query     string
+	listQuery string
+	args      int
+	nodeID    int64
 }
 
 func OpenDatabase(ctx context.Context, dsn string, nodeID int64, fields []string, maxOpen, maxIdle int, maxLifetime time.Duration) (*Database, error) {
@@ -46,12 +49,8 @@ func OpenDatabase(ctx context.Context, dsn string, nodeID int64, fields []string
 		}
 		conditions = append(conditions, column+" = ?")
 	}
-	query := `SELECT u.id
-FROM ` + "`user`" + ` AS u
-INNER JOIN ` + "`node`" + ` AS n ON n.id = ?
-WHERE n.type <> 0
+	eligibility := `n.type <> 0
   AND (n.node_bandwidth_limit = 0 OR n.node_bandwidth < n.node_bandwidth_limit)
-  AND (` + strings.Join(conditions, " OR ") + `)
   AND (
     u.is_admin = 1
     OR (
@@ -61,9 +60,38 @@ WHERE n.type <> 0
       AND (n.node_group = 0 OR u.node_group = n.node_group)
       AND u.transfer_enable > u.u + u.d
     )
-  )
+  )`
+	query := `SELECT u.id
+FROM ` + "`user`" + ` AS u
+INNER JOIN ` + "`node`" + ` AS n ON n.id = ?
+WHERE ` + eligibility + `
+  AND (` + strings.Join(conditions, " OR ") + `)
 LIMIT 2`
-	return &Database{db: db, query: query, args: len(fields), nodeID: nodeID}, nil
+	listQuery := `SELECT u.id, u.uuid
+FROM ` + "`user`" + ` AS u
+INNER JOIN ` + "`node`" + ` AS n ON n.id = ?
+WHERE ` + eligibility
+	return &Database{db: db, query: query, listQuery: listQuery, args: len(fields), nodeID: nodeID}, nil
+}
+
+func (d *Database) Users(ctx context.Context) ([]panel.User, error) {
+	rows, err := d.db.QueryContext(ctx, d.listQuery, d.nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	defer rows.Close()
+	var users []panel.User
+	for rows.Next() {
+		var user panel.User
+		if err := rows.Scan(&user.ID, &user.UUID); err != nil {
+			return nil, fmt.Errorf("scan user: %w", err)
+		}
+		users = append(users, user)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	return users, nil
 }
 
 func (d *Database) Authenticate(ctx context.Context, credential string) (int64, bool, error) {

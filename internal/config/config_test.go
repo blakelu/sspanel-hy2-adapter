@@ -58,6 +58,29 @@ func TestValidateRejectsUnsafeAPIStaleWindow(t *testing.T) {
 	}
 }
 
+func TestValidateXrayOnlyConfiguration(t *testing.T) {
+	cfg := Default()
+	cfg.Panel.BaseURL = "https://panel.example.com"
+	cfg.Panel.Key = "secret"
+	cfg.Panel.NodeID = 1
+	cfg.HY2.Enabled = false
+	cfg.Xray.Enabled = true
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestValidateRequiresEnabledProtocol(t *testing.T) {
+	cfg := Default()
+	cfg.Panel.BaseURL = "https://panel.example.com"
+	cfg.Panel.Key = "secret"
+	cfg.Panel.NodeID = 1
+	cfg.HY2.Enabled = false
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "at least one") {
+		t.Fatalf("expected enabled protocol validation error, got %v", err)
+	}
+}
+
 func writeConfig(t *testing.T, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.yaml")

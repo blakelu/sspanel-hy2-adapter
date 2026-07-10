@@ -24,6 +24,16 @@ type fakeCollector struct {
 	called int
 }
 
+type fakeSynchronizer struct {
+	err    error
+	called int
+}
+
+func (f *fakeSynchronizer) Sync(context.Context) error {
+	f.called++
+	return f.err
+}
+
 func (f *fakeCollector) Collect(context.Context) error {
 	f.called++
 	return f.err
@@ -36,7 +46,7 @@ func (f *fakeSource) Healthy() bool { return f.healthy }
 func (f *fakeSource) Close() error  { return nil }
 
 func TestAuthenticateSuccess(t *testing.T) {
-	handler := New("/auth", "secret", &fakeSource{id: 42, ok: true, healthy: true}, nil, testLogger())
+	handler := New("/auth", "secret", &fakeSource{id: 42, ok: true, healthy: true}, nil, nil, testLogger())
 	req := httptest.NewRequest(http.MethodPost, "/auth?token=secret", strings.NewReader(`{"addr":"127.0.0.1:1","auth":"uuid","tx":100}`))
 	resp := httptest.NewRecorder()
 	handler.ServeHTTP(resp, req)
@@ -55,7 +65,7 @@ func TestAuthenticateDenialAndBackendFailureUseProtocolResponse(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			handler := New("/auth", "", tt.source, nil, testLogger())
+			handler := New("/auth", "", tt.source, nil, nil, testLogger())
 			req := httptest.NewRequest(http.MethodPost, "/auth", bytes.NewBufferString(`{"auth":"bad","addr":"x","tx":0}`))
 			resp := httptest.NewRecorder()
 			handler.ServeHTTP(resp, req)
@@ -67,7 +77,7 @@ func TestAuthenticateDenialAndBackendFailureUseProtocolResponse(t *testing.T) {
 }
 
 func TestAuthenticateRejectsInvalidTokenAndJSON(t *testing.T) {
-	handler := New("/auth", "secret", &fakeSource{}, nil, testLogger())
+	handler := New("/auth", "secret", &fakeSource{}, nil, nil, testLogger())
 
 	req := httptest.NewRequest(http.MethodPost, "/auth?token=wrong", strings.NewReader(`{"auth":"x"}`))
 	resp := httptest.NewRecorder()
@@ -85,7 +95,7 @@ func TestAuthenticateRejectsInvalidTokenAndJSON(t *testing.T) {
 }
 
 func TestHealth(t *testing.T) {
-	handler := New("/auth", "", &fakeSource{healthy: false}, nil, testLogger())
+	handler := New("/auth", "", &fakeSource{healthy: false}, nil, nil, testLogger())
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	resp := httptest.NewRecorder()
 	handler.ServeHTTP(resp, req)
@@ -96,7 +106,7 @@ func TestHealth(t *testing.T) {
 
 func TestManualTrafficCollection(t *testing.T) {
 	collector := &fakeCollector{}
-	handler := New("/auth", "secret", &fakeSource{healthy: true}, collector, testLogger())
+	handler := New("/auth", "secret", &fakeSource{healthy: true}, collector, nil, testLogger())
 	req := httptest.NewRequest(http.MethodPost, "/admin/collect?token=secret", nil)
 	resp := httptest.NewRecorder()
 	handler.ServeHTTP(resp, req)
@@ -107,7 +117,7 @@ func TestManualTrafficCollection(t *testing.T) {
 
 func TestManualTrafficCollectionRequiresTokenAndPropagatesFailure(t *testing.T) {
 	collector := &fakeCollector{err: errors.New("stats unavailable")}
-	handler := New("/auth", "secret", &fakeSource{healthy: true}, collector, testLogger())
+	handler := New("/auth", "secret", &fakeSource{healthy: true}, collector, nil, testLogger())
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/collect?token=wrong", nil)
 	resp := httptest.NewRecorder()
@@ -121,6 +131,36 @@ func TestManualTrafficCollectionRequiresTokenAndPropagatesFailure(t *testing.T) 
 	handler.ServeHTTP(resp, req)
 	if resp.Code != http.StatusBadGateway || collector.called != 1 {
 		t.Fatalf("failed collection response=%d called=%d", resp.Code, collector.called)
+	}
+}
+
+func TestManualUserSynchronization(t *testing.T) {
+	synchronizer := &fakeSynchronizer{}
+	handler := New("/auth", "secret", &fakeSource{healthy: true}, nil, synchronizer, testLogger())
+	req := httptest.NewRequest(http.MethodPost, "/admin/sync-users?token=secret", nil)
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK || synchronizer.called != 1 {
+		t.Fatalf("sync response=%d called=%d body=%s", resp.Code, synchronizer.called, resp.Body.String())
+	}
+}
+
+func TestManualUserSynchronizationRequiresTokenAndPropagatesFailure(t *testing.T) {
+	synchronizer := &fakeSynchronizer{err: errors.New("xray unavailable")}
+	handler := New("/auth", "secret", &fakeSource{healthy: true}, nil, synchronizer, testLogger())
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/sync-users?token=wrong", nil)
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+	if resp.Code != http.StatusUnauthorized || synchronizer.called != 0 {
+		t.Fatalf("unauthorized response=%d called=%d", resp.Code, synchronizer.called)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/admin/sync-users?token=secret", nil)
+	resp = httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+	if resp.Code != http.StatusBadGateway || synchronizer.called != 1 {
+		t.Fatalf("failed sync response=%d called=%d", resp.Code, synchronizer.called)
 	}
 }
 

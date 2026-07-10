@@ -19,6 +19,7 @@ import (
 	"sspanel-uim-hy2-adapter/internal/hy2"
 	"sspanel-uim-hy2-adapter/internal/panel"
 	"sspanel-uim-hy2-adapter/internal/stats"
+	"sspanel-uim-hy2-adapter/internal/xray"
 )
 
 var version = "dev"
@@ -50,7 +51,7 @@ func run() error {
 	defer cancel()
 
 	panelClient := panel.New(cfg.Panel.BaseURL, cfg.Panel.Key, cfg.Panel.NodeID, cfg.Panel.Timeout.Value(), cfg.Panel.InsecureSkipVerify)
-	userSource, apiSource, err := buildUserSource(ctx, cfg, panelClient, logger)
+	userSource, userProvider, apiSource, err := buildUserSource(ctx, cfg, panelClient, logger)
 	if err != nil {
 		return err
 	}
@@ -63,17 +64,42 @@ func run() error {
 		go runPanelHeartbeat(ctx, panelClient, cfg.Panel.HeartbeatInterval.Value(), logger)
 	}
 
-	state, err := stats.LoadState(cfg.HY2.StateFile)
-	if err != nil {
-		return err
+	var collectors stats.Group
+	var userSynchronizer httpserver.UserSynchronizer
+	if cfg.HY2.Enabled {
+		state, err := stats.LoadState(cfg.HY2.StateFile)
+		if err != nil {
+			return err
+		}
+		hy2Client := hy2.New(cfg.HY2.StatsURL, cfg.HY2.StatsSecret, cfg.HY2.Timeout.Value(), false)
+		collector := stats.NewCollector(hy2Client, panelClient, state, cfg.HY2.PollInterval.Value(), cfg.HY2.RunOnStartup, logger)
+		collectors = append(collectors, collector.Collect)
+		go collector.Run(ctx)
 	}
-	hy2Client := hy2.New(cfg.HY2.StatsURL, cfg.HY2.StatsSecret, cfg.HY2.Timeout.Value(), false)
-	collector := stats.NewCollector(hy2Client, panelClient, state, cfg.HY2.PollInterval.Value(), cfg.HY2.RunOnStartup, logger)
-	go collector.Run(ctx)
+	if cfg.Xray.Enabled {
+		state, err := stats.LoadState(cfg.Xray.StateFile)
+		if err != nil {
+			return err
+		}
+		xrayClient, err := xray.New(cfg.Xray.APIAddress, cfg.Xray.InboundTag, cfg.Xray.Timeout.Value())
+		if err != nil {
+			return err
+		}
+		defer xrayClient.Close()
+		collector := stats.NewCollector(xrayClient, panelClient, state, cfg.Xray.PollInterval.Value(), cfg.Xray.RunOnStartup, logger)
+		synchronizer := xray.NewSynchronizer(userProvider, xrayClient, collector, cfg.Xray.SyncInterval.Value(), logger)
+		if err := synchronizer.Sync(ctx); err != nil {
+			return fmt.Errorf("initial Xray user synchronization: %w", err)
+		}
+		collectors = append(collectors, collector.Collect)
+		userSynchronizer = synchronizer
+		go collector.Run(ctx)
+		go synchronizer.Run(ctx)
+	}
 
 	httpServer := &http.Server{
 		Addr:         cfg.Server.Listen,
-		Handler:      httpserver.New(cfg.Server.AuthPath, cfg.Server.AuthToken, userSource, collector, logger),
+		Handler:      httpserver.New(cfg.Server.AuthPath, cfg.Server.AuthToken, userSource, collectors, userSynchronizer, logger),
 		ReadTimeout:  cfg.Server.ReadTime.Value(),
 		WriteTimeout: cfg.Server.WriteTime.Value(),
 		IdleTimeout:  60 * time.Second,
@@ -101,7 +127,7 @@ func run() error {
 	}
 }
 
-func buildUserSource(ctx context.Context, cfg config.Config, panelClient *panel.Client, logger *slog.Logger) (auth.Source, *auth.API, error) {
+func buildUserSource(ctx context.Context, cfg config.Config, panelClient *panel.Client, logger *slog.Logger) (auth.Source, auth.UserProvider, *auth.API, error) {
 	if cfg.UserSource.Mode == "api" {
 		source := auth.NewAPI(
 			panelClient,
@@ -111,9 +137,9 @@ func buildUserSource(ctx context.Context, cfg config.Config, panelClient *panel.
 			logger,
 		)
 		if err := source.InitialRefresh(ctx); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		return source, source, nil
+		return source, source, source, nil
 	}
 	source, err := auth.NewDatabase(
 		ctx,
@@ -125,9 +151,14 @@ func buildUserSource(ctx context.Context, cfg config.Config, panelClient *panel.
 		cfg.UserSource.Database.ConnMaxLifetime.Value(),
 	)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return source, nil, nil
+	provider, ok := source.(auth.UserProvider)
+	if !ok {
+		source.Close()
+		return nil, nil, nil, errors.New("database user source does not support user listing")
+	}
+	return source, provider, nil, nil
 }
 
 func newLogger(level string) *slog.Logger {

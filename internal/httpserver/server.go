@@ -17,15 +17,20 @@ import (
 const maxAuthBody = 64 << 10
 
 type Server struct {
-	authPath  string
-	token     string
-	source    auth.Source
-	collector TrafficCollector
-	logger    *slog.Logger
+	authPath     string
+	token        string
+	source       auth.Source
+	collector    TrafficCollector
+	synchronizer UserSynchronizer
+	logger       *slog.Logger
 }
 
 type TrafficCollector interface {
 	Collect(ctx context.Context) error
+}
+
+type UserSynchronizer interface {
+	Sync(ctx context.Context) error
 }
 
 type authRequest struct {
@@ -39,13 +44,37 @@ type authResponse struct {
 	ID string `json:"id,omitempty"`
 }
 
-func New(authPath, token string, source auth.Source, collector TrafficCollector, logger *slog.Logger) http.Handler {
-	s := &Server{authPath: authPath, token: token, source: source, collector: collector, logger: logger}
+func New(authPath, token string, source auth.Source, collector TrafficCollector, synchronizer UserSynchronizer, logger *slog.Logger) http.Handler {
+	s := &Server{authPath: authPath, token: token, source: source, collector: collector, synchronizer: synchronizer, logger: logger}
 	mux := http.NewServeMux()
 	mux.HandleFunc(authPath, s.authenticate)
 	mux.HandleFunc("/admin/collect", s.collectTraffic)
+	mux.HandleFunc("/admin/sync-users", s.syncUsers)
 	mux.HandleFunc("/healthz", s.health)
 	return mux
+}
+
+func (s *Server) syncUsers(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.token == "" || !tokenMatches(s.token, requestToken(r)) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if s.synchronizer == nil {
+		http.Error(w, "user synchronizer unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if err := s.synchronizer.Sync(r.Context()); err != nil {
+		s.logger.Error("manual user synchronization failed", "error", err)
+		writeJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	s.logger.Info("manual user synchronization completed")
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) collectTraffic(w http.ResponseWriter, r *http.Request) {

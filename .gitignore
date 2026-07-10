@@ -35,7 +35,10 @@ go.work.sum
 /data/
 /config.yaml
 /config.docker-hy2.yaml
+/config.docker-vless-reality.yaml
 /hysteria.docker.yaml
+/xray.docker.json
 /.env
 /.port-sync.lock
+/.vless-sync-required
 *.log

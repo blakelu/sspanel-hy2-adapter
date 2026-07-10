@@ -9,14 +9,11 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"sspanel-uim-hy2-adapter/internal/traffic"
 )
 
 const maxStatsResponseSize = 16 << 20
-
-type Counter struct {
-	Tx uint64 `json:"tx"`
-	Rx uint64 `json:"rx"`
-}
 
 type Client struct {
 	baseURL string
@@ -34,7 +31,7 @@ func New(baseURL, secret string, timeout time.Duration, insecureSkipVerify bool)
 	}
 }
 
-func (c *Client) FetchTraffic(ctx context.Context) (map[string]Counter, error) {
+func (c *Client) FetchTraffic(ctx context.Context) (map[string]traffic.Counter, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/traffic", nil)
 	if err != nil {
 		return nil, fmt.Errorf("build HY2 stats request: %w", err)
@@ -58,7 +55,7 @@ func (c *Client) FetchTraffic(ctx context.Context) (map[string]Counter, error) {
 	if len(b) > maxStatsResponseSize {
 		return nil, fmt.Errorf("decode HY2 traffic: response exceeds %d bytes", maxStatsResponseSize)
 	}
-	stats := make(map[string]Counter)
+	stats := make(map[string]traffic.Counter)
 	if err := json.Unmarshal(b, &stats); err != nil {
 		return nil, fmt.Errorf("decode HY2 traffic: %w", err)
 	}

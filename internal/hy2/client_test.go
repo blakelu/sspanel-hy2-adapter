@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"sspanel-uim-hy2-adapter/internal/traffic"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -34,7 +36,7 @@ func TestFetchTraffic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]Counter{"12": {Tx: 123, Rx: 456}}
+	want := map[string]traffic.Counter{"12": {Tx: 123, Rx: 456}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("traffic = %#v, want %#v", got, want)
 	}

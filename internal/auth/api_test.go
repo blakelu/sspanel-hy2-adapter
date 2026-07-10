@@ -41,6 +41,10 @@ func TestAPIRefreshAndAuthenticate(t *testing.T) {
 	if _, ok, err := source.Authenticate(context.Background(), "missing"); err != nil || ok {
 		t.Fatalf("missing credential should be rejected, ok=%v err=%v", ok, err)
 	}
+	users, err := source.Users(context.Background())
+	if err != nil || len(users) != 2 || users[0].ID != 12 || users[1].ID != 34 {
+		t.Fatalf("Users() = %#v, %v", users, err)
+	}
 }
 
 func TestAPIStaleCacheFailsClosed(t *testing.T) {

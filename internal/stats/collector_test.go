@@ -10,16 +10,16 @@ import (
 	"testing"
 	"time"
 
-	"sspanel-uim-hy2-adapter/internal/hy2"
 	"sspanel-uim-hy2-adapter/internal/panel"
+	"sspanel-uim-hy2-adapter/internal/traffic"
 )
 
 type fakeReader struct {
-	traffic map[string]hy2.Counter
+	traffic map[string]traffic.Counter
 	err     error
 }
 
-func (f *fakeReader) FetchTraffic(context.Context) (map[string]hy2.Counter, error) {
+func (f *fakeReader) FetchTraffic(context.Context) (map[string]traffic.Counter, error) {
 	return f.traffic, f.err
 }
 
@@ -39,11 +39,11 @@ func TestCollectorReportsDeltaAndPersistsState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	state.Replace(map[string]hy2.Counter{"7": {Tx: 100, Rx: 200}})
+	state.Replace(map[string]traffic.Counter{"7": {Tx: 100, Rx: 200}})
 	if err := state.Save(); err != nil {
 		t.Fatal(err)
 	}
-	reader := &fakeReader{traffic: map[string]hy2.Counter{
+	reader := &fakeReader{traffic: map[string]traffic.Counter{
 		"7":   {Tx: 150, Rx: 260},
 		"9":   {Tx: 10, Rx: 20},
 		"bad": {Tx: 99, Rx: 99},
@@ -74,10 +74,10 @@ func TestCollectorHandlesHY2CounterReset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	state.Replace(map[string]hy2.Counter{"7": {Tx: 1000, Rx: 2000}})
+	state.Replace(map[string]traffic.Counter{"7": {Tx: 1000, Rx: 2000}})
 	reporter := &fakeReporter{}
 	collector := NewCollector(
-		&fakeReader{traffic: map[string]hy2.Counter{"7": {Tx: 5, Rx: 8}}},
+		&fakeReader{traffic: map[string]traffic.Counter{"7": {Tx: 5, Rx: 8}}},
 		reporter, state, time.Minute, false, discardLogger(),
 	)
 	if err := collector.Collect(context.Background()); err != nil {
@@ -94,16 +94,16 @@ func TestCollectorDoesNotAdvanceStateWhenReportFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	state.Replace(map[string]hy2.Counter{"7": {Tx: 10, Rx: 20}})
+	state.Replace(map[string]traffic.Counter{"7": {Tx: 10, Rx: 20}})
 	reporter := &fakeReporter{err: errors.New("panel unavailable")}
 	collector := NewCollector(
-		&fakeReader{traffic: map[string]hy2.Counter{"7": {Tx: 50, Rx: 80}}},
+		&fakeReader{traffic: map[string]traffic.Counter{"7": {Tx: 50, Rx: 80}}},
 		reporter, state, time.Minute, false, discardLogger(),
 	)
 	if err := collector.Collect(context.Background()); err == nil {
 		t.Fatal("expected report error")
 	}
-	want := map[string]hy2.Counter{"7": {Tx: 10, Rx: 20}}
+	want := map[string]traffic.Counter{"7": {Tx: 10, Rx: 20}}
 	if !reflect.DeepEqual(state.Snapshot(), want) {
 		t.Fatalf("state advanced after failed report: %#v", state.Snapshot())
 	}

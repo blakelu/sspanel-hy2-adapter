@@ -9,6 +9,7 @@ MOCK_BIN="${TEST_DIR}/mock-bin"
 ENV_FILE="${TEST_DIR}/.env"
 COMPOSE_FILE="${TEST_DIR}/docker-compose.hy2.yaml"
 DOCKER_LOG="${TEST_DIR}/docker.log"
+PORT_LOG="${TEST_DIR}/port.log"
 
 cleanup() {
     rm -rf -- "${TEST_DIR}"
@@ -24,6 +25,9 @@ SSPANEL_NODE_ID=11
 HY2_PUBLIC_PORT=8443
 HY2_ALLOWED_PORT_MIN=8000
 HY2_ALLOWED_PORT_MAX=9000
+VLESS_PUBLIC_PORT=443
+VLESS_ALLOWED_PORT_MIN=7000
+VLESS_ALLOWED_PORT_MAX=7999
 ADAPTER_AUTH_TOKEN=adapter-secret
 ADAPTER_DEBUG_PORT=18080
 EOF
@@ -33,6 +37,8 @@ cat >"${COMPOSE_FILE}" <<'EOF'
 services:
   hysteria:
     image: example.invalid/hysteria
+  xray:
+    image: example.invalid/xray
 EOF
 
 cat >"${MOCK_BIN}/curl" <<'EOF'
@@ -40,6 +46,14 @@ cat >"${MOCK_BIN}/curl" <<'EOF'
 if [[ "$*" == *"/admin/collect"* ]]; then
     printf '%s\n' collect >>"${MOCK_CURL_LOG}"
     if [[ "${MOCK_COLLECT_FAIL:-0}" == "1" ]]; then
+        exit 22
+    fi
+    printf '%s' '{"ok":true}'
+    exit 0
+fi
+if [[ "$*" == *"/admin/sync-users"* ]]; then
+    printf '%s\n' sync-users >>"${MOCK_CURL_LOG}"
+    if [[ "${MOCK_SYNC_FAIL:-0}" == "1" ]]; then
         exit 22
     fi
     printf '%s' '{"ok":true}'
@@ -58,7 +72,8 @@ cat >"${MOCK_BIN}/docker" <<'EOF'
 if [[ "${1:-}" == "compose" && "${2:-}" == "version" ]]; then
     exit 0
 fi
-if [[ " $* " == *" port --protocol udp "* ]]; then
+if [[ " $* " == *" port --protocol "* ]]; then
+    printf '%s\n' "$*" >>"${MOCK_PORT_LOG}"
     if [[ -n "${MOCK_PUBLISHED_PORT:-}" ]]; then
         printf '0.0.0.0:%s\n' "${MOCK_PUBLISHED_PORT}"
         exit 0
@@ -82,12 +97,17 @@ run_sync() {
     COMPOSE_FILE="${COMPOSE_FILE}" \
     LOCK_FILE="${TEST_DIR}/sync.lock" \
     MOCK_DOCKER_LOG="${DOCKER_LOG}" \
+    MOCK_PORT_LOG="${PORT_LOG}" \
     MOCK_CURL_LOG="${TEST_DIR}/curl.log" \
     MOCK_PANEL_RESPONSE="${MOCK_PANEL_RESPONSE}" \
     MOCK_COLLECT_FAIL="${MOCK_COLLECT_FAIL:-0}" \
+    MOCK_SYNC_FAIL="${MOCK_SYNC_FAIL:-0}" \
     MOCK_PUBLISHED_PORT="${MOCK_PUBLISHED_PORT:-}" \
     MOCK_DOCKER_FAIL_ONCE="${MOCK_DOCKER_FAIL_ONCE:-0}" \
     MOCK_DOCKER_FAIL_MARKER="${TEST_DIR}/docker-failed" \
+    PORT_SYNC_MODE="${PORT_SYNC_MODE:-hy2}" \
+    SYNC_REQUIRED_FILE="${TEST_DIR}/vless-sync-required" \
+    SYNC_RETRY_ATTEMPTS=1 \
     "${SYNC_SCRIPT}"
 }
 
@@ -138,5 +158,41 @@ if run_sync; then
 fi
 grep -qx 'HY2_PUBLIC_PORT=8555' "${ENV_FILE}"
 [[ "$(grep -c -- '--force-recreate hysteria' "${DOCKER_LOG}")" -eq 2 ]]
+
+# VLESS mode updates the TCP publication, recreates only Xray, then restores
+# dynamically managed users through the Adapter management endpoint.
+PORT_SYNC_MODE=vless
+MOCK_DOCKER_FAIL_ONCE=0
+MOCK_PANEL_RESPONSE='{"ret":1,"data":{"custom_config":{"offset_port_node":7443}}}'
+MOCK_PUBLISHED_PORT=443
+: >"${DOCKER_LOG}"
+: >"${TEST_DIR}/curl.log"
+run_sync
+grep -qx 'VLESS_PUBLIC_PORT=7443' "${ENV_FILE}"
+grep -q -- 'port --protocol tcp xray 443' "${PORT_LOG}"
+grep -q -- '--force-recreate xray' "${DOCKER_LOG}"
+grep -qx 'collect' "${TEST_DIR}/curl.log"
+grep -qx 'sync-users' "${TEST_DIR}/curl.log"
+[[ ! -e "${TEST_DIR}/vless-sync-required" ]]
+
+# If immediate user restoration fails, retain a marker and retry it on the
+# next unchanged-port pass without recreating Xray again.
+MOCK_SYNC_FAIL=1
+MOCK_PANEL_RESPONSE='{"ret":1,"data":{"custom_config":{"offset_port_node":7555}}}'
+MOCK_PUBLISHED_PORT=7443
+: >"${DOCKER_LOG}"
+if run_sync; then
+    printf 'expected failed VLESS user synchronization to return an error\n' >&2
+    exit 1
+fi
+grep -qx 'VLESS_PUBLIC_PORT=7555' "${ENV_FILE}"
+[[ -e "${TEST_DIR}/vless-sync-required" ]]
+
+MOCK_SYNC_FAIL=0
+MOCK_PUBLISHED_PORT=7555
+: >"${DOCKER_LOG}"
+run_sync
+[[ ! -e "${TEST_DIR}/vless-sync-required" ]]
+[[ ! -s "${DOCKER_LOG}" ]]
 
 printf 'sync-panel-port tests passed\n'

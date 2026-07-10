@@ -1,6 +1,6 @@
-# SSPanel-UIM Hysteria 2 Adapter
+# SSPanel-UIM HY2 / VLESS Adapter
 
-一个独立的 Go 服务，用 SSPanel-UIM 用户数据为 Hysteria 2 提供 HTTP Auth，并将 Hysteria 2 Traffic Stats API 的用户流量增量上报到 SSPanel-UIM WebAPI。
+一个独立的 Go 服务，用 SSPanel-UIM 用户数据为 Hysteria 2 提供 HTTP Auth，或通过 Xray gRPC API 动态管理 VLESS + REALITY / XTLS Vision 用户，并把两种协议的用户流量增量上报到 SSPanel-UIM WebAPI。
 
 ## 工作方式
 
@@ -8,6 +8,10 @@
 HY2 客户端 ──auth──> Hysteria 2 ──POST /auth──> Adapter ──> SSPanel API 或 MySQL
                                       │
                                       └── GET HY2 /traffic ──增量──> SSPanel /users/traffic
+
+VLESS 客户端 ──REALITY/Vision──> Xray <──gRPC 用户同步── Adapter ──> SSPanel API 或 MySQL
+                                  │
+                                  └── gRPC 用户统计 ──增量──> SSPanel /users/traffic
 ```
 
 - API 认证模式：从 `GET /mod_mu/users` 同步可用用户，支持 ETag 和最大缓存陈旧时间；面板不可达超过 `max_stale` 后 fail-closed。
@@ -16,6 +20,9 @@ HY2 客户端 ──auth──> Hysteria 2 ──POST /auth──> Adapter ─�
 - 流量上报：读取不清零的 `GET /traffic` 累计值，计算 checkpoint 差分；只有 SSPanel-UIM 接受完整批次后才推进 checkpoint。
 - HY2 返回的客户端 ID 固定为 SSPanel 用户数字 ID，因此 stats 结果可以直接映射到 `user_id`。
 - HY2 `tx` 对应客户端上传，写入 SSPanel `u`；`rx` 对应客户端下载，写入 `d`。
+- VLESS 使用 SSPanel 用户 UUID 认证；适配器将 Xray 用户 `email` 固定为用户数字 ID，用它关联 Xray 统计与 SSPanel 用户。
+- VLESS 用户列表以面板为准定期全量对账：新增用户动态加入，过期、封禁、流量耗尽或被删除的用户动态移除；重复 UUID 会全部拒绝。
+- HY2 与 Xray 可以单独启用，也可以同时启用；两者使用独立 checkpoint 后合并上报到同一个节点。
 
 流量始终通过 SSPanel-UIM WebAPI 上报，即使认证使用数据库模式也是如此。这样由面板统一处理节点倍率、动态倍率、小时统计和节点总流量，避免直接写库破坏面板记账逻辑。
 
@@ -36,9 +43,9 @@ $_ENV['checkNodeIp'] = true;
 
 推荐用 `uuid` 作为 HY2 凭据。API 返回哪些凭据字段由节点 `sort` 决定；若当前逻辑节点不返回 UUID，可将 `credential_fields` 改成 `passwd`。凭据必须随机且全局唯一，重复凭据会被适配器拒绝。
 
-> 此项目负责节点认证和流量记账，不修改 SSPanel-UIM 的订阅生成器。要自动下发 `hysteria2://` 链接，还需要在面板侧增加相应订阅输出，并把同一个 UUID/节点密码作为 HY2 `auth` 下发。
+> 此项目负责节点认证、VLESS 用户同步和流量记账，不修改 SSPanel-UIM 的订阅生成器。要自动下发 `hysteria2://` 或 `vless://` 链接，仍需在面板侧增加对应订阅输出。
 
-## Docker 部署
+## Hysteria 2 Docker 部署
 
 使用 [docker-compose.hy2.yaml](docker-compose.hy2.yaml) 同时启动 Adapter、独立 HY2 和端口同步服务：
 
@@ -198,13 +205,105 @@ curl -sS 'http://127.0.0.1:8080/auth?token=ADAPTER_TOKEN' \
 
 成功响应为 `{"ok":true,"id":"用户数字ID"}`。
 
+## VLESS + REALITY / XTLS Vision Docker 部署
+
+这套部署使用官方 `ghcr.io/xtls/xray-core:26.2.6` 镜像。Xray 的 VLESS inbound 初始用户列表为空，Adapter 启动后通过仅在 Docker 内网开放的 gRPC API 安装面板当前授权用户，不需要重启 Xray。
+
+准备配置：
+
+```bash
+cp config.docker-vless-reality.example.yaml config.docker-vless-reality.yaml
+cp xray.docker.example.json xray.docker.json
+cp .env.example .env                 # 已有 .env 时不要覆盖
+chmod 644 config.docker-vless-reality.yaml xray.docker.json
+```
+
+生成 REALITY X25519 密钥对和 short ID：
+
+```bash
+docker run --rm ghcr.io/xtls/xray-core:26.2.6 x25519
+openssl rand -hex 8
+```
+
+编辑 `xray.docker.json`，替换以下值：
+
+- `REPLACE_PRIVATE_KEY`：`x25519` 输出的 `PrivateKey`，只保存在服务端。
+- `REPLACE_SHORT_ID`：上面生成的 16 位十六进制 short ID。
+- `REPLACE_TARGET_HOST` 和 `REPLACE_SERVER_NAME`：可从节点直接访问、支持 TLS 1.3 且证书覆盖该 SNI 的伪装站点；两者通常相同。
+
+REALITY 会把认证失败的连接转发到 `target`。不要随意选择可能使节点成为公共 CDN 转发器的目标；上线前可在节点上执行 `xray tls ping 目标域名` 检查握手兼容性。
+
+在 `.env` 中至少设置：
+
+```dotenv
+SSPANEL_BASE_URL=https://panel.example.com
+SSPANEL_MU_KEY=使用随机长密钥
+SSPANEL_NODE_ID=12
+ADAPTER_AUTH_TOKEN=另一个随机长密钥
+VLESS_PUBLIC_PORT=443
+HOST_PROJECT_DIR=/opt/sspanel-hy2-adapter
+PORT_SYNC_INTERVAL=30
+VLESS_ALLOWED_PORT_MIN=1024
+VLESS_ALLOWED_PORT_MAX=65535
+```
+
+`HOST_PROJECT_DIR` 必须是服务器上本项目的绝对路径。建议把允许端口范围收紧到防火墙和云安全组已经放行的 TCP 范围。
+
+面板节点的 `custom_config` 至少设置：
+
+```json
+{
+  "offset_port_user": 443,
+  "offset_port_node": 443
+}
+```
+
+没有额外端口转发时，两者应保持一致：`offset_port_node` 驱动 Docker 实际发布端口，`offset_port_user` 用于客户端订阅链接。
+
+启动并检查：
+
+```bash
+docker compose -f docker-compose.vless-reality.yaml up -d --build
+docker compose -f docker-compose.vless-reality.yaml ps
+docker compose -f docker-compose.vless-reality.yaml logs -f adapter xray port-sync
+```
+
+只需对公网开放 `${VLESS_PUBLIC_PORT:-443}/TCP`。Xray gRPC API `10085` 不映射到宿主机，Adapter 调试端口默认只绑定 `127.0.0.1:18080`。
+
+### 从面板自动切换 VLESS TCP 端口
+
+Compose 中的 `port-sync` 每隔 `PORT_SYNC_INTERVAL` 秒读取面板 `custom_config.offset_port_node`。发现变化后会按以下顺序处理：
+
+1. 调用 Adapter 的受保护接口采集并上报尚未结算的 Xray 流量。
+2. 原子更新 `.env` 中的 `VLESS_PUBLIC_PORT`。
+3. 只重建 `xray` 服务，Adapter 和流量 checkpoint 不会重建。
+4. 调用 `/admin/sync-users` 立即把面板有效用户重新加入空的 Xray inbound。
+
+如果第四步暂时失败，端口同步器会保留 `.vless-sync-required` 标记，并在下一轮继续恢复用户，不会反复重建已经切换成功的 Xray。端口变化会短暂断开现有 VLESS 连接，因此必须提前放行 `VLESS_ALLOWED_PORT_MIN` 到 `VLESS_ALLOWED_PORT_MAX` 的 TCP 范围。
+
+`port-sync` 挂载了 `/var/run/docker.sock`，具备控制宿主机 Docker 的高权限；不要向该镜像加入不受信任代码，也不要暴露 Docker API。
+
+客户端链接模板如下，其中 `pbk` 是当前 Xray `x25519` 输出的 `Password`（旧版本输出标签为 Public key），绝不能填服务端 `PrivateKey`：
+
+```text
+vless://USER_UUID@NODE_HOST:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=SERVER_NAME&fp=chrome&pbk=PUBLIC_KEY&sid=SHORT_ID&type=tcp#NODE_NAME
+```
+
+### SSPanel-UIM 订阅边界
+
+SSPanel-UIM 官方当前的节点类型中没有原生 VLESS + REALITY 订阅输出；`sort=11` 会让 `/mod_mu/users` 返回 UUID，但其内置订阅仍生成 VMess。此仓库已经完成服务端用户授权和记账，自动下发上述 `vless://` 链接仍需在你的面板分支中增加订阅生成逻辑，或先手工分发链接。客户端 UUID 必须与 SSPanel 用户 UUID 一致。
+
 ## 可靠性与边界
 
 - `hy2.state_file` 必须持久化。面板上报失败时不会推进 checkpoint，下次会重试同一增量。
+- `xray.state_file` 也必须持久化，并且不能与 HY2 共用同一路径。
 - HY2 重启导致计数变小后，适配器会把新计数视为重启后的增量。
 - 单个 HY2 stats API 只能由一个适配器实例采集；多实例会重复记账。
 - SSPanel WebAPI 没有幂等键。若进程在“面板已记账、checkpoint 尚未落盘”的极小窗口崩溃，重启后可能重复上报该批流量；不会因为普通网络失败而主动丢弃流量。
 - 不要让其他程序调用 `/traffic?clear=1`，否则被清除但尚未采集的流量无法恢复。
+- Xray API 必须只放在可信内网。它没有在此方案中增加额外认证，暴露后可被用于修改代理用户。
+- `/admin/collect` 和 `/admin/sync-users` 都要求 `ADAPTER_AUTH_TOKEN`；调试端口必须保持仅绑定回环地址。
+- 移除失效 VLESS 用户前会先采集一次流量；若采集失败，授权回收优先，适配器仍会移除用户并记录错误。
 - HY2 HTTP Auth 只能返回允许/拒绝，无法下发 SSPanel 的每用户限速。当前版本也不维护 SSPanel `aliveip`，因此不提供精确的 HY2 在线 IP/设备数限制。
 - `server.auth_token` 是纵深防护。最佳部署仍是 Adapter Auth 与 HY2 stats 都只监听回环地址，并通过防火墙阻止外部访问。
 
@@ -215,4 +314,4 @@ go test ./...
 go vet ./...
 ```
 
-协议参考：[Hysteria 2 HTTP authentication](https://v2.hysteria.network/docs/advanced/Full-Server-Config/#http-authentication)、[Hysteria 2 Traffic Stats API](https://v2.hysteria.network/docs/advanced/Traffic-Stats-API/)、[SSPanel-UIM](https://github.com/Anankke/SSPanel-UIM)。
+协议参考：[Hysteria 2 HTTP authentication](https://v2.hysteria.network/docs/advanced/Full-Server-Config/#http-authentication)、[Hysteria 2 Traffic Stats API](https://v2.hysteria.network/docs/advanced/Traffic-Stats-API/)、[Xray VLESS](https://xtls.github.io/config/inbounds/vless.html)、[Xray REALITY](https://xtls.github.io/config/transports/reality.html)、[Xray API](https://xtls.github.io/config/api.html)、[Xray Statistics](https://xtls.github.io/config/stats.html)、[SSPanel-UIM](https://github.com/Anankke/SSPanel-UIM)。
