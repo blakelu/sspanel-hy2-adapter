@@ -1,0 +1,68 @@
+services:
+  wireguard:
+    image: lscr.io/linuxserver/wireguard:latest
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    environment:
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      TZ: ${TZ:-Asia/Shanghai}
+      LOG_CONFS: "false"
+    volumes:
+      - ./wireguard-relay:/config
+      - /lib/modules:/lib/modules:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wg show wg-relay >/dev/null 2>&1 && ip -4 addr show dev wg-relay | grep -q '10.77.0.1'" ]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+
+  adapter:
+    build:
+      context: .
+      args:
+        VERSION: local
+    restart: unless-stopped
+    env_file:
+      - ${RELAY_ENV_FILE:-.env.hy2-relay}
+    network_mode: host
+    volumes:
+      - ./config.docker-hy2-relay.yaml:/etc/sspanel-hy2-adapter/config.yaml:ro
+      - relay-adapter-state:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:18082/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+
+  hysteria:
+    image: tobyxdd/hysteria:latest
+    restart: unless-stopped
+    command: ["server", "-c", "/etc/hysteria-server.yaml"]
+    network_mode: host
+    environment:
+      HYSTERIA_ACME_DIR: /acme
+    depends_on:
+      adapter:
+        condition: service_healthy
+      wireguard:
+        condition: service_healthy
+    volumes:
+      - ./hysteria.relay-server.yaml:/etc/hysteria-server.yaml:ro
+      - relay-hysteria-acme:/acme
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  relay-adapter-state:
+  relay-hysteria-acme:

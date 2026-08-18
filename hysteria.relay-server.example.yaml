@@ -1,0 +1,41 @@
+# 复制为 hysteria.relay-server.yaml，然后替换所有 REPLACE_* 值。
+# 这是面向用户的入口 HY2：在这里完成 SSPanel 鉴权和流量统计，出站绑定 WireGuard IP。
+listen: :8443
+
+acme:
+  domains:
+    - REPLACE_RELAY_DOMAIN
+  email: REPLACE_ACME_EMAIL
+  ca: letsencrypt
+  type: dns
+  dns:
+    name: cloudflare
+    config:
+      cloudflare_api_token: REPLACE_CLOUDFLARE_API_TOKEN
+
+auth:
+  type: http
+  http:
+    url: http://127.0.0.1:18082/auth?token=REPLACE_ADAPTER_AUTH_TOKEN
+    insecure: false
+
+trafficStats:
+  listen: 127.0.0.1:19998
+  secret: "REPLACE_HY2_STATS_SECRET"
+
+disableUDP: false
+
+# 只有由该 outbound 建立的连接使用 10.77.0.1 源地址，并被策略路由送入 WireGuard。
+# HY2 面向公网客户端的 QUIC 回包不使用该源地址，仍从入口机公网接口返回。
+outbounds:
+  - name: wireguard-landing
+    type: direct
+    direct:
+      mode: 4
+      bindIPv4: 10.77.0.1
+
+masquerade:
+  type: proxy
+  proxy:
+    url: https://www.bing.com/
+    rewriteHost: true

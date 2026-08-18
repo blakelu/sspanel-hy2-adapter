@@ -205,6 +205,24 @@ curl -sS 'http://127.0.0.1:8080/auth?token=ADAPTER_TOKEN' \
 
 成功响应为 `{"ok":true,"id":"用户数字ID"}`。
 
+## Hysteria 2 通用链式中转
+
+需要让入口机负责 SSPanel 鉴权与用户流量上报、由另一台机器提供最终公网出口时，可
+使用项目内的通用链式中转部署：
+
+```text
+用户 ──> 入口 HY2 + Adapter ──> WireGuard ──> 落地机 NAT ──> Internet
+```
+
+入口机使用 [docker-compose.hy2-relay.yaml](docker-compose.hy2-relay.yaml)，落地机使用
+[docker-compose.wireguard-landing.yaml](docker-compose.wireguard-landing.yaml)。Hysteria
+的 direct outbound 绑定 WireGuard 隧道地址，落地机只负责转发和 NAT，不连接面板，
+因此只由入口节点完成用户校验和流量记账。该方案不需要 SOCKS5 或第二层 HY2，使用通用的
+`relay` / `landing` 命名，不与具体国家、地区或线路绑定。
+
+完整的配置文件、端口规划、面板设置、启动命令和验证方法见
+[docs/HY2_RELAY.md](docs/HY2_RELAY.md)。
+
 ## VLESS + REALITY / XTLS Vision Docker 部署
 
 这套部署使用官方 `ghcr.io/xtls/xray-core:26.2.6` 镜像。Xray 的 VLESS inbound 初始用户列表为空，Adapter 启动后通过仅在 Docker 内网开放的 gRPC API 安装面板当前授权用户，不需要重启 Xray。

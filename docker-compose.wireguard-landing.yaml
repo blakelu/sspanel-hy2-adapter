@@ -1,0 +1,22 @@
+services:
+  wireguard:
+    image: lscr.io/linuxserver/wireguard:latest
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    environment:
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      TZ: ${TZ:-Asia/Shanghai}
+      LOG_CONFS: "false"
+    volumes:
+      - ./wireguard-landing:/config
+      - /lib/modules:/lib/modules:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wg show wg-landing >/dev/null 2>&1 && ip -4 addr show dev wg-landing | grep -q '10.77.0.2'" ]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s

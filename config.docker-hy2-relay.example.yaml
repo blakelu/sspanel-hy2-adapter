@@ -1,0 +1,43 @@
+# 复制为 config.docker-hy2-relay.yaml。Adapter 与 Hysteria 使用 host 网络。
+server:
+  listen: 127.0.0.1:18082
+  auth_path: /auth
+  auth_token: ${ADAPTER_AUTH_TOKEN}
+  read_timeout: 5s
+  write_timeout: 15s
+
+panel:
+  base_url: ${SSPANEL_BASE_URL}
+  key: ${SSPANEL_MU_KEY}
+  node_id: ${SSPANEL_NODE_ID}
+  timeout: 5s
+  heartbeat_interval: 60s
+  insecure_skip_verify: false
+
+user_source:
+  mode: api
+  credential_fields:
+    - uuid
+  api:
+    refresh_interval: 30s
+    max_stale: 5m
+  database:
+    dsn: ${SSPANEL_DB_USER}:${SSPANEL_DB_PASSWORD}@tcp(${SSPANEL_DB_HOST}:3306)/${SSPANEL_DB_NAME}?charset=utf8mb4&parseTime=true&loc=Local
+    max_open_conns: 10
+    max_idle_conns: 5
+    conn_max_lifetime: 5m
+
+hy2:
+  enabled: true
+  stats_url: http://127.0.0.1:19998
+  stats_secret: ${HY2_STATS_SECRET}
+  timeout: 5s
+  poll_interval: 60s
+  state_file: /app/data/traffic-state.json
+  run_on_startup: true
+
+xray:
+  enabled: false
+
+log:
+  level: info
