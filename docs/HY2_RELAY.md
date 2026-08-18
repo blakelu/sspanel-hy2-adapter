@@ -141,12 +141,17 @@ WireGuard 配置中的 `PostUp` 会在容器启动时把严格限定到 `10.77.0
 
 ## 3. 配置入口机 WireGuard
 
-复制模板：
+先初始化入口机环境文件和 WireGuard 配置。已有 `.env.hy2-relay` 时不会覆盖：
 
 ```bash
+test -f .env.hy2-relay || cp .env.hy2-relay.example .env.hy2-relay
 cp wireguard.relay.example.conf wireguard-relay/wg_confs/wg-relay.conf
-chmod 600 wireguard-relay/wg_confs/wg-relay.conf
+chmod 600 .env.hy2-relay wireguard-relay/wg_confs/wg-relay.conf
 ```
+
+此时 `.env.hy2-relay` 中的面板相关值可以暂时保持示例内容；只启动 `wireguard` 服务不会
+使用这些值。`PUID`、`PGID` 和 `TZ` 可按宿主机环境调整。启动 Adapter 前必须在第 5 步
+填写真实的面板和统计密钥。
 
 编辑 `wireguard-relay/wg_confs/wg-relay.conf`，替换：
 
@@ -220,10 +225,9 @@ WireGuard 握手、落地机 IP 转发、FORWARD 和 NAT 规则。
 复制模板：
 
 ```bash
-cp .env.hy2-relay.example .env.hy2-relay
 cp config.docker-hy2-relay.example.yaml config.docker-hy2-relay.yaml
 cp hysteria.relay-server.example.yaml hysteria.relay-server.yaml
-chmod 600 .env.hy2-relay hysteria.relay-server.yaml
+chmod 600 hysteria.relay-server.yaml
 chmod 644 config.docker-hy2-relay.yaml
 ```
 
