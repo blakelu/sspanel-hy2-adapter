@@ -58,10 +58,10 @@ GOST、SOCKS5 或第二层 HY2。
 ```bash
 mkdir -p wireguard-relay/keys wireguard-relay/wg_confs
 
-docker run --rm \
+docker run --rm --entrypoint /bin/sh \
   -v "$PWD/wireguard-relay/keys:/keys" \
   lscr.io/linuxserver/wireguard:latest \
-  sh -c 'umask 077; wg genkey | tee /keys/privatekey | wg pubkey > /keys/publickey; wg genpsk > /keys/presharedkey'
+  -c 'umask 077; wg genkey | tee /keys/privatekey | wg pubkey > /keys/publickey; wg genpsk > /keys/presharedkey'
 ```
 
 落地机项目目录：
@@ -69,10 +69,10 @@ docker run --rm \
 ```bash
 mkdir -p wireguard-landing/keys wireguard-landing/wg_confs
 
-docker run --rm \
+docker run --rm --entrypoint /bin/sh \
   -v "$PWD/wireguard-landing/keys:/keys" \
   lscr.io/linuxserver/wireguard:latest \
-  sh -c 'umask 077; wg genkey | tee /keys/privatekey | wg pubkey > /keys/publickey'
+  -c 'umask 077; wg genkey | tee /keys/privatekey | wg pubkey > /keys/publickey'
 ```
 
 需要交换：
