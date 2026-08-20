@@ -42,8 +42,10 @@ go.work.sum
 /xray.docker.json
 /.env
 /.env.hy2-relay
+/.env.hy2-relay.*
 /.env.wireguard-landing
 /wireguard-relay/
+/wireguard-relay-*/
 /wireguard-landing/
 /.port-sync.lock
 /.vless-sync-required

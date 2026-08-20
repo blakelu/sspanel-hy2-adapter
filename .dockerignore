@@ -11,8 +11,10 @@ hysteria.relay-server.yaml
 xray.docker.json
 .env
 .env.hy2-relay
+.env.hy2-relay.*
 .env.wireguard-landing
 wireguard-relay
+wireguard-relay-*
 wireguard-landing
 certs
 *.log

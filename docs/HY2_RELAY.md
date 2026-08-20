@@ -24,9 +24,12 @@ GOST、SOCKS5 或第二层 HY2。
 
 ## 前提和默认规划
 
-入口机通过 Docker Compose 的 host 网络创建 WireGuard 接口；落地机直接使用系统原生
-`wg-quick`（Alpine OpenRC 或 systemd），减少 Docker daemon 和容器镜像的内存、磁盘占用。两端都必须是
-Linux。需要：
+入口机的 WireGuard、Adapter 和 Hysteria 共享一个独立 Docker 网络命名空间，
+只向宿主机发布 HY2 UDP 入口端口。WireGuard 接口和策略路由不会出现在宿主机，
+因此多个中转实例可以复用相同的内部接口名、隧道地址、策略路由表和管理端口。
+
+落地机直接使用系统原生 `wg-quick`（Alpine OpenRC 或 systemd），减少 Docker daemon
+和容器镜像的内存、磁盘占用。两端都必须是 Linux。需要：
 
 - 入口机域名解析到入口机公网 IP；
 - 落地机具有可访问的公网 IPv4；
@@ -48,8 +51,9 @@ Linux。需要：
 | Adapter 管理地址 | `127.0.0.1:18082` |
 | Hysteria Stats 地址 | `127.0.0.1:19998` |
 
-如果这些接口、地址、端口或路由表与现有服务冲突，应在两个 WireGuard 配置、Hysteria
-`bindIPv4` 和 Compose 健康检查中同步修改。
+同一入口机上的多个 Compose 实例只有宿主机 HY2 UDP 入口端口必须唯一。每个实例
+还必须使用独立的 Compose 项目名、环境文件、WireGuard 配置目录、Adapter 配置、
+Hysteria 配置和面板节点 ID。
 
 ## 1. 生成 WireGuard 密钥
 
@@ -230,6 +234,9 @@ chmod 600 .env.hy2-relay wireguard-relay/wg_confs/wg-relay.conf
 使用这些值。`PUID`、`PGID` 和 `TZ` 可按宿主机环境调整。启动 Adapter 前必须在第 5 步
 填写真实的面板和统计密钥。
 
+编辑 `.env.hy2-relay`，保证 `HY2_LISTEN_PORT` 与 Hysteria 的 `listen` 及面板入口端口
+相同。单实例可保持其他 Compose 路径参数的默认值。
+
 编辑 `wireguard-relay/wg_confs/wg-relay.conf`，替换：
 
 - `REPLACE_RELAY_PRIVATE_KEY`：入口机私钥；
@@ -238,19 +245,8 @@ chmod 600 .env.hy2-relay wireguard-relay/wg_confs/wg-relay.conf
 - `REPLACE_LANDING_DOMAIN`：落地机域名或公网 IP；
 - `REPLACE_LANDING_PORT`：必须与落地机 `ListenPort` 相同，例如 `20230`。
 
-入口机使用宽松反向路径检查，避免 WireGuard 返回流量被严格 `rp_filter` 丢弃：
-
-```bash
-sudo sysctl -w net.ipv4.conf.all.src_valid_mark=1
-sudo sysctl -w net.ipv4.conf.all.rp_filter=2
-sudo sysctl -w net.ipv4.conf.default.rp_filter=2
-
-printf '%s\n' \
-  'net.ipv4.conf.all.src_valid_mark=1' \
-  'net.ipv4.conf.all.rp_filter=2' \
-  'net.ipv4.conf.default.rp_filter=2' |
-  sudo tee /etc/sysctl.d/99-hy2-wireguard-relay.conf
-```
+入口 WireGuard 的接口、`ip rule` 和路由表只在容器网络命名空间中生效，不需要
+修改宿主机 `rp_filter`、默认路由或策略路由。
 
 先只启动 WireGuard：
 
@@ -269,14 +265,15 @@ docker compose --env-file .env.hy2-relay \
   -f docker-compose.hy2-relay.yaml \
   exec wireguard wg show wg-relay
 
-ip rule show | grep 'from 10.77.0.1'
-ip route show table 51845
-ping -I 10.77.0.1 -c 3 10.77.0.2
-curl -4 --interface 10.77.0.1 https://api.ipify.org
+docker compose --env-file .env.hy2-relay \
+  -p hy2-relay \
+  -f docker-compose.hy2-relay.yaml \
+  exec wireguard sh -c \
+  "ip rule show | grep 'from 10.77.0.1'; ip route show table 51845; ping -I 10.77.0.1 -c 3 10.77.0.2"
 ```
 
-最后一条命令必须显示落地机公网出口 IP。若不正确，暂时不要启动 Hysteria，先检查
-WireGuard 握手、落地机 IP 转发、FORWARD 和 NAT 规则。
+若握手或隧道 ping 不正常，暂时不要启动 Hysteria，先检查落地机 IP 转发、
+FORWARD 和 NAT 规则。落地出口 IP 在第 6 步通过客户端验证。
 
 ## 4. 在 SSPanel 新建入口节点
 
@@ -339,9 +336,9 @@ docker compose --env-file .env.hy2-relay \
   ps
 ```
 
-该 Compose 使用 host 网络，`18082` 和 `19998` 都明确只监听 `127.0.0.1`。入口端口直接
-由 `hysteria.relay-server.yaml` 的 `listen` 决定，不包含 `port-sync`；修改端口时需要同步
-更新面板配置和 Hysteria 配置。
+该 Compose 只通过 `HY2_LISTEN_PORT` 向宿主机发布 UDP 入口。`18082`、`19998`、
+WireGuard 接口和策略路由均位于项目的独立网络命名空间。修改入口端口时必须
+同步更新 `.env.hy2-relay` 的 `HY2_LISTEN_PORT`、Hysteria `listen` 和面板节点配置。
 
 ## 6. 验证流量与记账
 
@@ -366,7 +363,8 @@ WireGuard 隧道；不能通过客户端 `ping` 公网地址来判断 HY2 是否
 
 ## 停止与清理
 
-入口机正常停止 Compose 会执行 WireGuard `PostDown`，清除入口策略路由。落地机停止
+入口机正常停止 Compose 会删除容器内的 WireGuard 接口和策略路由，不会修改
+宿主机路由。落地机停止
 原生 OpenRC/systemd 服务会执行落地配置的 `PostDown`，清除 INPUT、FORWARD 和
 NAT。Alpine 3.19 执行：
 
@@ -380,23 +378,36 @@ rc-update del wg-landing default
 
 Debian/Ubuntu 落地机则执行 `sudo systemctl disable --now wg-quick@wg-landing`。
 
-如果入口容器被强制终止导致策略规则残留，可以执行：
-
-```bash
-sudo ip rule del from 10.77.0.1/32 table 51845 priority 10000 2>/dev/null || true
-sudo ip route flush table 51845
-sudo ip link delete wg-relay 2>/dev/null || true
-```
-
 入口机不要使用 `down -v`，除非明确要删除 Adapter 流量 checkpoint 和 ACME
 账户/证书数据。落地机的 `/etc/wireguard/wg-landing.conf` 和私钥不会因为停止服务而删除。
 
 ## 多个落地机
 
-同一 WireGuard 接口不能把相同的 `0.0.0.0/0` 同时交给多个 peer。要同时使用多个落地
-机，需要为每个落地分别创建 WireGuard 接口、隧道源地址和策略路由表，并在 Hysteria
-中增加对应的 direct outbound，再通过 ACL 选择。只切换单个默认落地时，修改 `wg-relay`
-的 peer 后重启 WireGuard 即可。
+每个落地使用一个独立 Compose 项目。因为项目之间的网络命名空间相互隔离，
+内部可继续复用 `wg-relay`、`10.77.0.1/32`、`51845`、`18082` 和 `19998`。
+每个实例必须使用：
+
+- 唯一的 Compose 项目名，例如 `hy2-relay-tw`、`hy2-relay-jp`；
+- 唯一的宿主机 `HY2_LISTEN_PORT`；
+- 独立的 `.env` 及面板节点 ID；
+- 独立的 WireGuard、Adapter 和 Hysteria 配置路径。
+
+启动时使用对应环境文件和项目名：
+
+```bash
+docker compose --env-file .env.hy2-relay.tw \
+  -p hy2-relay-tw \
+  -f docker-compose.hy2-relay.yaml \
+  up -d --build
+
+docker compose --env-file .env.hy2-relay.jp \
+  -p hy2-relay-jp \
+  -f docker-compose.hy2-relay.yaml \
+  up -d --build
+```
+
+环境文件中用 `WIREGUARD_CONFIG_DIR`、`ADAPTER_CONFIG_FILE`、
+`HYSTERIA_CONFIG_FILE` 和 `RELAY_ENV_FILE` 指向该实例的独立配置。
 
 协议参考：[Hysteria 2 direct outbound](https://v2.hysteria.network/docs/advanced/Full-Server-Config/#customizing-direct-outbound)、
 [WireGuard Quick Start](https://www.wireguard.com/quickstart/)、

@@ -219,7 +219,9 @@ curl -sS 'http://127.0.0.1:8080/auth?token=ADAPTER_TOKEN' \
 WireGuard 配置使用 [wireguard.landing.example.conf](wireguard.landing.example.conf)。Hysteria 的 direct
 outbound 绑定 WireGuard 隧道地址，落地机只负责转发和 NAT，不连接面板，因此只由入口
 节点完成用户校验和流量记账。该方案不需要 SOCKS5 或第二层 HY2，使用通用的
-`relay` / `landing` 命名，不与具体国家、地区或线路绑定。
+`relay` / `landing` 命名，不与具体国家、地区或线路绑定。入口 Compose 使用
+独立网络命名空间，不修改宿主机的 WireGuard 接口和策略路由；通过唯一项目名、
+入口端口和配置路径可在同一入口机并行运行多个落地实例。
 
 完整的配置文件、端口规划、面板设置、启动命令和验证方法见
 [docs/HY2_RELAY.md](docs/HY2_RELAY.md)。

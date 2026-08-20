@@ -2,7 +2,6 @@ services:
   wireguard:
     image: lscr.io/linuxserver/wireguard:latest
     restart: unless-stopped
-    network_mode: host
     cap_add:
       - NET_ADMIN
       - SYS_MODULE
@@ -12,10 +11,12 @@ services:
       TZ: ${TZ:-Asia/Shanghai}
       LOG_CONFS: "false"
     volumes:
-      - ./wireguard-relay:/config
+      - ${WIREGUARD_CONFIG_DIR:-./wireguard-relay}:/config
       - /lib/modules:/lib/modules:ro
+    ports:
+      - "${HY2_LISTEN_PORT:?set HY2_LISTEN_PORT}:${HY2_LISTEN_PORT:?set HY2_LISTEN_PORT}/udp"
     healthcheck:
-      test: ["CMD-SHELL", "wg show wg-relay >/dev/null 2>&1 && ip -4 addr show dev wg-relay | grep -q '10.77.0.1'" ]
+      test: ["CMD-SHELL", "wg show ${WG_INTERFACE:-wg-relay} >/dev/null 2>&1 && ip -4 addr show dev ${WG_INTERFACE:-wg-relay} | grep -q '${WG_ADDRESS:-10.77.0.1}'" ]
       interval: 10s
       timeout: 3s
       retries: 6
@@ -29,9 +30,12 @@ services:
     restart: unless-stopped
     env_file:
       - ${RELAY_ENV_FILE:-.env.hy2-relay}
-    network_mode: host
+    network_mode: service:wireguard
+    depends_on:
+      wireguard:
+        condition: service_healthy
     volumes:
-      - ./config.docker-hy2-relay.yaml:/etc/sspanel-hy2-adapter/config.yaml:ro
+      - ${ADAPTER_CONFIG_FILE:-./config.docker-hy2-relay.yaml}:/etc/sspanel-hy2-adapter/config.yaml:ro
       - relay-adapter-state:/app/data
     read_only: true
     tmpfs:
@@ -49,7 +53,7 @@ services:
     image: tobyxdd/hysteria:latest
     restart: unless-stopped
     command: ["server", "-c", "/etc/hysteria-server.yaml"]
-    network_mode: host
+    network_mode: service:wireguard
     environment:
       HYSTERIA_ACME_DIR: /acme
     depends_on:
@@ -58,7 +62,7 @@ services:
       wireguard:
         condition: service_healthy
     volumes:
-      - ./hysteria.relay-server.yaml:/etc/hysteria-server.yaml:ro
+      - ${HYSTERIA_CONFIG_FILE:-./hysteria.relay-server.yaml}:/etc/hysteria-server.yaml:ro
       - relay-hysteria-acme:/acme
     security_opt:
       - no-new-privileges:true
