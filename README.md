@@ -215,9 +215,10 @@ curl -sS 'http://127.0.0.1:8080/auth?token=ADAPTER_TOKEN' \
 ```
 
 入口机使用 [docker-compose.hy2-relay.yaml](docker-compose.hy2-relay.yaml)，落地机使用
-[docker-compose.wireguard-landing.yaml](docker-compose.wireguard-landing.yaml)。Hysteria
-的 direct outbound 绑定 WireGuard 隧道地址，落地机只负责转发和 NAT，不连接面板，
-因此只由入口节点完成用户校验和流量记账。该方案不需要 SOCKS5 或第二层 HY2，使用通用的
+原生 `wg-quick`。Alpine 3.19 使用 [openrc.wg-landing.example](openrc.wg-landing.example)，
+WireGuard 配置使用 [wireguard.landing.example.conf](wireguard.landing.example.conf)。Hysteria 的 direct
+outbound 绑定 WireGuard 隧道地址，落地机只负责转发和 NAT，不连接面板，因此只由入口
+节点完成用户校验和流量记账。该方案不需要 SOCKS5 或第二层 HY2，使用通用的
 `relay` / `landing` 命名，不与具体国家、地区或线路绑定。
 
 完整的配置文件、端口规划、面板设置、启动命令和验证方法见

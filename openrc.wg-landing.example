@@ -1,0 +1,38 @@
+#!/sbin/openrc-run
+
+name="wg-landing"
+description="WireGuard landing interface"
+
+depend() {
+    need net
+    after firewall
+}
+
+start() {
+    ebegin "Starting WireGuard interface wg-landing"
+    if /usr/bin/wg show wg-landing >/dev/null 2>&1; then
+        eend 0
+        return 0
+    fi
+    /usr/bin/wg-quick up /etc/wireguard/wg-landing.conf
+    eend $?
+}
+
+stop() {
+    ebegin "Stopping WireGuard interface wg-landing"
+    if ! /usr/bin/wg show wg-landing >/dev/null 2>&1; then
+        eend 0
+        return 0
+    fi
+    /usr/bin/wg-quick down /etc/wireguard/wg-landing.conf
+    eend $?
+}
+
+status() {
+    if /usr/bin/wg show wg-landing >/dev/null 2>&1; then
+        einfo "wg-landing is up"
+        return 0
+    fi
+    eerror "wg-landing is down"
+    return 1
+}
