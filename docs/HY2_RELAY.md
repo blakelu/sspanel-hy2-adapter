@@ -14,9 +14,9 @@
                                   Internet
 ```
 
-入口 Hysteria 的 `direct` outbound 固定绑定 WireGuard 地址 `10.77.0.1`。入口机上的源
-地址策略路由只把 `10.77.0.1` 发起的连接送进 WireGuard，因此不会改变宿主机默认路由，
-也不会把 HY2 面向公网客户端的 QUIC 回包错误地送到落地机。
+入口 Hysteria 的 `direct` outbound 固定绑定 WireGuard 地址 `10.77.0.1`。入口机 Docker
+网络命名空间中的源地址策略路由只把 `10.77.0.1` 发起的连接送进 WireGuard，因此不会
+改变宿主机默认路由，也不会把 HY2 面向公网客户端的 QUIC 回包错误地送到落地机。
 
 落地机不运行 Hysteria、不连接 SSPanel，只负责 WireGuard 解封装、IP 转发和 NAT。
 SSPanel 因而只收到入口节点的用户流量。整个转发路径支持 IPv4 TCP 和 UDP，不需要
@@ -24,9 +24,21 @@ GOST、SOCKS5 或第二层 HY2。
 
 ## 前提和默认规划
 
+本方案固定采用以下部署方式：
+
+- **入口机：Docker WireGuard + Docker Adapter + Docker Hysteria**；
+- **落地机：系统原生 WireGuard（`wg-quick`）**。
+
 入口机的 WireGuard、Adapter 和 Hysteria 共享一个独立 Docker 网络命名空间，
 只向宿主机发布 HY2 UDP 入口端口。WireGuard 接口和策略路由不会出现在宿主机，
 因此多个中转实例可以复用相同的内部接口名、隧道地址、策略路由表和管理端口。
+
+不要把入口机的 WireGuard 单独改成宿主机原生 `wg-quick`，也不要把 Hysteria 改成
+独立的 `network_mode: host` 容器。当前 Compose 中的 `network_mode: service:wireguard`
+让三项服务共享网络命名空间，是隔离策略路由、保持 HY2 公网回包直连以及支持多实例的
+必要条件。入口机即使只有 1 核、1 GB 内存，也仍建议保持该结构：入口机本来就需要
+Docker 运行 Adapter 和 Hysteria，WireGuard 容器不会再启动一套 Docker daemon，数据面
+仍使用宿主机的 WireGuard 内核能力，容器主要负责配置和网络命名空间隔离。
 
 落地机直接使用系统原生 `wg-quick`（Alpine OpenRC 或 systemd），减少 Docker daemon
 和容器镜像的内存、磁盘占用。两端都必须是 Linux。需要：
@@ -220,7 +232,9 @@ sudo systemctl status wg-quick@wg-landing --no-pager
 sudo journalctl -u wg-quick@wg-landing -e --no-pager
 ```
 
-## 3. 配置入口机 WireGuard
+<a id="3-配置入口机-wireguard"></a>
+
+## 3. 配置并启动入口机 Docker WireGuard
 
 先初始化入口机环境文件和 WireGuard 配置。已有 `.env.hy2-relay` 时不会覆盖：
 
@@ -245,8 +259,9 @@ chmod 600 .env.hy2-relay wireguard-relay/wg_confs/wg-relay.conf
 - `REPLACE_LANDING_DOMAIN`：落地机域名或公网 IP；
 - `REPLACE_LANDING_PORT`：必须与落地机 `ListenPort` 相同，例如 `20230`。
 
-入口 WireGuard 的接口、`ip rule` 和路由表只在容器网络命名空间中生效，不需要
-修改宿主机 `rp_filter`、默认路由或策略路由。
+入口 WireGuard 必须由 `docker-compose.hy2-relay.yaml` 中的 `wireguard` 服务启动。
+它的接口、`ip rule` 和路由表只在容器网络命名空间中生效，不需要修改宿主机
+`rp_filter`、默认路由或策略路由，也不要同时在宿主机启动同名的 `wg-quick` 服务。
 
 先只启动 WireGuard：
 

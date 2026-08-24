@@ -224,7 +224,8 @@ outbound 绑定 WireGuard 隧道地址，落地机只负责转发和 NAT，不�
 入口端口和配置路径可在同一入口机并行运行多个落地实例。
 
 完整的配置文件、端口规划、面板设置、启动命令和验证方法见
-[docs/HY2_RELAY.md](docs/HY2_RELAY.md)。
+[docs/HY2_RELAY.md](docs/HY2_RELAY.md)。落地机使用 Debian 13 时，另见
+[docs/HY2_RELAY_DEBIAN13.md](docs/HY2_RELAY_DEBIAN13.md)。
 
 ## VLESS + REALITY / XTLS Vision Docker 部署
 
