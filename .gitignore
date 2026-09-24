@@ -31,7 +31,6 @@ go.work.sum
 # .idea/
 # .vscode/
 
-/bin/
 /data/
 /config.yaml
 /config.docker-hy2.yaml
@@ -49,5 +48,11 @@ go.work.sum
 /wireguard-landing/
 /.port-sync.lock
 /.vless-sync-required
+/native/hy2/server.env
+/native/hy2/adapter.yaml
+/native/hy2/server.yaml
+/native/vless/server.env
+/native/vless/adapter.yaml
+/native/vless/server.json
 *.log
-/.DS_Store
+.DS_Store

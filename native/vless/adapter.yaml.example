@@ -1,0 +1,32 @@
+server:
+  listen: 127.0.0.1:18081
+  auth_path: /auth
+  auth_token: "${ADAPTER_AUTH_TOKEN}"
+  read_timeout: 5s
+  write_timeout: 15s
+panel:
+  base_url: "${SSPANEL_BASE_URL}"
+  key: "${SSPANEL_MU_KEY}"
+  node_id: ${SSPANEL_NODE_ID}
+  timeout: 5s
+  heartbeat_interval: 60s
+  insecure_skip_verify: false
+user_source:
+  mode: api
+  credential_fields: [uuid]
+  api:
+    refresh_interval: 60s
+    max_stale: 5m
+hy2:
+  enabled: false
+xray:
+  enabled: true
+  api_address: 127.0.0.1:10085
+  inbound_tag: vless-reality
+  timeout: 5s
+  sync_interval: 60s
+  poll_interval: 60s
+  state_file: ./xray-traffic-state.json
+  run_on_startup: true
+log:
+  level: warn

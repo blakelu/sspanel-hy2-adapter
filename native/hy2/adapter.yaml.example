@@ -1,0 +1,31 @@
+server:
+  listen: 127.0.0.1:18080
+  auth_path: /auth
+  auth_token: "${ADAPTER_AUTH_TOKEN}"
+  read_timeout: 5s
+  write_timeout: 15s
+panel:
+  base_url: "${SSPANEL_BASE_URL}"
+  key: "${SSPANEL_MU_KEY}"
+  node_id: ${SSPANEL_NODE_ID}
+  timeout: 5s
+  heartbeat_interval: 60s
+  insecure_skip_verify: false
+user_source:
+  mode: api
+  credential_fields: [uuid]
+  api:
+    refresh_interval: 60s
+    max_stale: 5m
+hy2:
+  enabled: true
+  stats_url: http://127.0.0.1:19999
+  stats_secret: "${HY2_STATS_SECRET}"
+  timeout: 5s
+  poll_interval: 60s
+  state_file: ./traffic-state.json
+  run_on_startup: true
+xray:
+  enabled: false
+log:
+  level: warn

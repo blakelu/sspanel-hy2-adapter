@@ -81,6 +81,33 @@ func TestValidateRequiresEnabledProtocol(t *testing.T) {
 	}
 }
 
+func TestNativeExamplesLoad(t *testing.T) {
+	t.Setenv("ADAPTER_AUTH_TOKEN", "adapter-secret")
+	t.Setenv("SSPANEL_BASE_URL", "https://panel.example.net")
+	t.Setenv("SSPANEL_MU_KEY", "panel-secret")
+	t.Setenv("SSPANEL_NODE_ID", "12")
+	t.Setenv("HY2_STATS_SECRET", "stats-secret")
+	for _, tc := range []struct {
+		name string
+		hy2  bool
+		xray bool
+	}{
+		{name: "hy2", hy2: true},
+		{name: "vless", xray: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join("..", "..", "native", tc.name, "adapter.yaml.example")
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.HY2.Enabled != tc.hy2 || cfg.Xray.Enabled != tc.xray || cfg.Panel.NodeID != 12 {
+				t.Fatalf("unexpected native config: %#v", cfg)
+			}
+		})
+	}
+}
+
 func writeConfig(t *testing.T, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.yaml")

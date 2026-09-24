@@ -47,6 +47,8 @@ $_ENV['checkNodeIp'] = true;
 
 ## Hysteria 2 Docker 部署
 
+128 MB NAT 机器的原生 Alpine OpenRC / systemd 部署见 [docs/NATIVE_128M_NAT.md](docs/NATIVE_128M_NAT.md)，包含独立的 HY2 与 VLESS 安装脚本、预编译二进制部署、NAT 端口映射和面板对接说明。
+
 使用 [docker-compose.hy2.yaml](docker-compose.hy2.yaml) 同时启动 Adapter、独立 HY2 和端口同步服务：
 
 ```bash

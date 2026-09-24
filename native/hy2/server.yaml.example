@@ -1,0 +1,27 @@
+# NAT 网关将公网 UDP 端口转发到本机 listen 的 UDP 端口。
+# DNS-01 无需公网 TCP 80/443；Hysteria 在持久化目录中维护和续期证书。
+listen: 0.0.0.0:8443
+acme:
+  domains:
+    - REPLACE_HY2_DOMAIN
+  email: REPLACE_ACME_EMAIL
+  ca: letsencrypt
+  dir: /var/lib/sspanel-native/hy2/acme
+  type: dns
+  dns:
+    name: cloudflare
+    config:
+      cloudflare_api_token: REPLACE_CLOUDFLARE_API_TOKEN
+auth:
+  type: http
+  http:
+    url: http://127.0.0.1:18080/auth?token=REPLACE_ADAPTER_AUTH_TOKEN
+    insecure: false
+trafficStats:
+  listen: 127.0.0.1:19999
+  secret: REPLACE_HY2_STATS_SECRET
+masquerade:
+  type: proxy
+  proxy:
+    url: https://www.bing.com/
+    rewriteHost: true
