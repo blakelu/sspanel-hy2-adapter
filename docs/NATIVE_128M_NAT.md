@@ -95,3 +95,7 @@ systemctl show -p MemoryCurrent sspanel-native-hy2-adapter sspanel-native-hy2-hy
 上面的 `journalctl` / `systemctl` 命令仅用于 systemd。Alpine 用 `rc-service` 查看状态；OpenRC 的进程日志保存在 `/var/log/sspanel-native/`，可用 `tail` 查看，并应按磁盘容量配置日志轮转。仅查看已安装的协议对应的服务即可。配置或二进制变更后，可再次执行该协议的安装脚本。重装前脚本先请求 Adapter 采集并上报未结算流量；若采集失败，脚本停止而不重启代理。状态文件分别保存在 `/var/lib/sspanel-native/hy2/traffic-state.json` 和 `/var/lib/sspanel-native/vless/xray-traffic-state.json`，升级时不要删除。HY2 证书续期由运行中的 Hysteria 处理，不需要定时重装脚本。
 
 同一节点不要让 Docker 版和原生版同时运行，否则端口冲突且可能重复上报。切换前先停止对应 Compose 服务。公网仅开放 NAT 分配的 HY2 UDP 或 VLESS TCP 端口。
+
+Alpine 日志若出现 `Exec format error`，先检查 `uname -m` 和 `sha256sum bin/hysteria-linux /usr/local/bin/hysteria`。本项目提供的 Linux amd64 Hysteria v2.12.3 的 SHA-256 为 `8c7a68a906998b747a0db87586e364f995fbfddb95693ae6e2fdb68a6e920d3e`。两处文件应一致；不一致时，重新解压匹配架构的交付包，并从 `bin/hysteria-linux` 重新安装。
+
+OpenRC 的 `status: started` 只说明监督进程在运行。若 `wget -qO- http://127.0.0.1:18080/healthz` 仍提示 `Connection refused`，检查 `/var/log/sspanel-native/sspanel-native-hy2-adapter.err.log` 和 `.log`。Adapter 在首次成功读取面板用户之前不会开始监听，因此面板 URL、MuKey、节点 ID、DNS、TLS 或网络错误都可能使它反复启动失败。修正配置后先执行 `rc-service sspanel-native-hy2-adapter restart`，无需重启 Hysteria。

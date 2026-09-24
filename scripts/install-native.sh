@@ -46,7 +46,13 @@ for path in "${source_dir}/adapter.yaml" "${source_dir}/server.env" "${source_di
 done
 [ -x "$adapter_bin" ] || die "adapter binary is missing or not executable: $adapter_bin"
 [ -x "$proxy_bin" ] || die "proxy binary is missing or not executable: $proxy_bin"
+if ! "$adapter_bin" -version >/dev/null 2>&1; then
+    die "adapter binary cannot run on $(uname -m): $adapter_bin"
+fi
 if [ "$mode" = hy2 ]; then
+    if ! "$proxy_bin" version >/dev/null 2>&1; then
+        die "Hysteria binary cannot run on $(uname -m): $proxy_bin"
+    fi
     grep -Eq '^[[:space:]]*(tls|acme):' "${source_dir}/server.yaml" ||
         die 'HY2 server.yaml must configure tls or acme'
     grep -Eq '^[[:space:]]*auth:' "${source_dir}/server.yaml" ||
@@ -191,3 +197,26 @@ EOF
     rc-service "$proxy_service" status
     rc-service "$adapter_service" status
 fi
+
+attempt=0
+while [ "$attempt" -lt 15 ]; do
+    if command -v curl >/dev/null 2>&1; then
+        if curl --fail --silent --max-time 2 "http://127.0.0.1:${admin_port}/healthz" >/dev/null; then
+            printf 'Adapter is healthy on 127.0.0.1:%s\n' "$admin_port"
+            exit 0
+        fi
+    elif command -v wget >/dev/null 2>&1; then
+        if wget -q -T 2 -O /dev/null "http://127.0.0.1:${admin_port}/healthz"; then
+            printf 'Adapter is healthy on 127.0.0.1:%s\n' "$admin_port"
+            exit 0
+        fi
+    else
+        die 'curl or wget is required for the Adapter health check'
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+done
+if [ "$init_system" = openrc ]; then
+    die "Adapter did not become healthy; inspect /var/log/sspanel-native/${adapter_service}.err.log and .log"
+fi
+die "Adapter did not become healthy; inspect journalctl -u ${adapter_service}"
