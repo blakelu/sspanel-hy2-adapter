@@ -2,6 +2,24 @@
 
 这套部署运行两个原生进程：本项目的 Adapter，以及 Hysteria 2 或 Xray。无需 Docker。安装脚本使用 `/bin/sh`，支持 **Alpine 3.21 的 OpenRC** 和 Debian / Ubuntu 的 systemd；需有 root 权限。128 MB 是机器内存，不是进程内存保证：能否稳定运行取决于系统本身、在线人数和代理负载。脚本将 Go GC 设为 `GOGC=50`，并把 Adapter / 代理的软堆目标设为 `32MiB` / `48MiB`；这不是进程 RSS 的硬上限。上线后观察两进程 RSS 和系统剩余内存，用户较多时需增加内存或调整目标。
 
+## 交互式安装和管理（推荐）
+
+当前仓库的预编译文件支持 **Linux x86_64**。在 Alpine NAT 机器的 root shell 中运行：
+
+```sh
+wget -O /tmp/sspanel-native-manager.sh \
+  https://raw.githubusercontent.com/blakelu/sspanel-hy2-adapter/main/scripts/native-manager.sh && \
+  sh /tmp/sspanel-native-manager.sh
+```
+
+菜单命令 `1` 安装、`2` 卸载全部项目服务和数据、`3` 重启、`4` 修改配置并重启、`0` 退出。也可直接传入命令，例如 `sh /tmp/sspanel-native-manager.sh 1`。安装完成后会创建 `/usr/local/sbin/sspanel-native-manager`，以后直接运行它即可。
+
+安装时选择 HY2 或 VLESS，依次填写 SSPanel 地址、MuKey、节点 ID、公网端口和 NAT 转发到本机的端口。**两项端口默认相同**；若 NAT 是 `23008/UDP → 23008/UDP`，本机监听端口也应填 `23008`。HY2 还需选择面板用户密码字段（`uuid` 或 `passwd`）、填写证书域名、ACME 邮箱、Cloudflare DNS API Token；VLESS 还需 REALITY 目标域名和 SNI。Adapter Token、HY2 统计密钥、VLESS 私钥和 Short ID 直接回车即自动生成；修改配置时回车保留已有值，输入 `new` 重新生成。Cloudflare Token 和 MuKey 必须自行提供，不能随机生成。
+
+脚本从本项目 GitHub `main` 的 `bin/` 下载 Adapter、Hysteria 或 Xray，依据仓库的 `bin/SHA256SUMS` 校验，再调用现有原生安装器创建服务并设置开机自启。若仓库是私有的或文件尚未推送，GitHub Raw 会返回 404，下载会停止且不会安装 404 文本。可用 `NATIVE_REPO_RAW_BASE` 指向同结构的可信镜像。配置和生成的密钥保存在 `/etc/sspanel-native/` 与 `/opt/sspanel-native/`，权限为 root 可读；HY2 证书和流量状态在 `/var/lib/sspanel-native/`。
+
+命令 `2` 会停止并移除 HY2/VLESS 服务、项目二进制、配置、证书、流量状态、日志和管理器本身；不会删除现有 Git 仓库，也不会卸载系统共享的 `curl`、`jq` 等软件包。卸载前脚本尝试上报最后一段流量，失败时需要明确输入 `FORCE` 才会继续。VLESS 安装结束会显示 REALITY Public Key 和 Short ID，供填写客户端；本项目不会修改 SSPanel 的订阅生成器。
+
 Alpine 首次部署建议先执行 `apk add ca-certificates curl`，确保 Adapter、Hysteria 能访问 HTTPS 面板、Cloudflare 和证书颁发机构；安装 VLESS 时还需 `apk add jq`，用于校验 Xray JSON。`curl` 也用于重装前上报最后一段流量。
 
 ## 先确认面板和 NAT

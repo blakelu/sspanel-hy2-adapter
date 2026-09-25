@@ -60,6 +60,7 @@ if [ "$mode" = hy2 ]; then
 else
     command -v jq >/dev/null 2>&1 || die 'jq is required to validate Xray JSON (apk add jq)'
     jq -e . "${source_dir}/server.json" >/dev/null || die 'invalid Xray JSON'
+    "$proxy_bin" run -test -config "${source_dir}/server.json" >/dev/null || die 'Xray rejected server.json'
 fi
 
 # Preserve traffic accumulated since the last Adapter checkpoint.
@@ -192,7 +193,8 @@ EOF
     rc-update add "$proxy_service" default
     rc-update add "$adapter_service" default
     if service_active "$adapter_service"; then rc-service "$adapter_service" stop; fi
-    if service_active "$proxy_service"; then rc-service "$proxy_service" restart; else rc-service "$proxy_service" start; fi
+    if service_active "$proxy_service"; then rc-service "$proxy_service" stop; fi
+    rc-service "$proxy_service" start
     rc-service "$adapter_service" start
     rc-service "$proxy_service" status
     rc-service "$adapter_service" status

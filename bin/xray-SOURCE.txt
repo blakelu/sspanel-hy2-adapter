@@ -1,0 +1,7 @@
+Xray-core v26.2.6 (Linux amd64)
+Source: https://github.com/XTLS/Xray-core
+Release: https://github.com/XTLS/Xray-core/releases/tag/v26.2.6
+Archive: https://github.com/XTLS/Xray-core/releases/download/v26.2.6/Xray-linux-64.zip
+Official archive SHA-256: 29ce535b56e207a406ffa1c2d4842dcc410be003eff8ec508bb732abc9f8e385
+Extracted xray binary SHA-256: 3f650abf1fc4a4fbf5abe7fc9990a2658020907cd984214e9c075b4b00989fea
+License: Mozilla Public License 2.0 (see xray-LICENSE)
