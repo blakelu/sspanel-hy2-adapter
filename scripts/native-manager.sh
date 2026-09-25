@@ -152,19 +152,24 @@ installed() { [ -f "/etc/sspanel-native/$1/server.env" ]; }
 
 ensure_dependencies() {
     dep_mode=$1
+    dep_missing=
+    if [ ! -r /etc/ssl/cert.pem ] && [ ! -r /etc/ssl/certs/ca-certificates.crt ]; then
+        dep_missing='ca-certificates'
+    fi
+    command -v curl >/dev/null 2>&1 || dep_missing="$dep_missing curl"
+    if [ "$dep_mode" = vless ]; then
+        command -v jq >/dev/null 2>&1 || dep_missing="$dep_missing jq"
+    fi
+    if [ -z "$dep_missing" ]; then
+        command -v sha256sum >/dev/null 2>&1 || die '需要 sha256sum'
+        return 0
+    fi
     if command -v apk >/dev/null 2>&1; then
-        if [ "$dep_mode" = vless ]; then
-            apk add --no-cache ca-certificates curl jq
-        else
-            apk add --no-cache ca-certificates curl
-        fi
+        # Only install missing packages; avoid a repository fetch on every run.
+        apk add --no-cache $dep_missing
     elif command -v apt-get >/dev/null 2>&1; then
         apt-get update
-        if [ "$dep_mode" = vless ]; then
-            DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl jq
-        else
-            DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl
-        fi
+        DEBIAN_FRONTEND=noninteractive apt-get install -y $dep_missing
     else
         die '缺少支持的包管理器（apk 或 apt-get）'
     fi
