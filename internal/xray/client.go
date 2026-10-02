@@ -25,6 +25,7 @@ const (
 type Client struct {
 	conn       *grpc.ClientConn
 	inboundTag string
+	flow       string
 	timeout    time.Duration
 }
 
@@ -33,7 +34,7 @@ type UserSpec struct {
 	Flow string
 }
 
-func New(address, inboundTag string, timeout time.Duration) (*Client, error) {
+func New(address, inboundTag, flow string, timeout time.Duration) (*Client, error) {
 	conn, err := grpc.NewClient(address,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithDefaultCallOptions(grpc.ForceCodec(wireCodec{})),
@@ -41,7 +42,7 @@ func New(address, inboundTag string, timeout time.Duration) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create Xray API client: %w", err)
 	}
-	return &Client{conn: conn, inboundTag: inboundTag, timeout: timeout}, nil
+	return &Client{conn: conn, inboundTag: inboundTag, flow: flow, timeout: timeout}, nil
 }
 
 func (c *Client) Close() error { return c.conn.Close() }
@@ -77,7 +78,7 @@ func (c *Client) AddUser(ctx context.Context, email, id string) error {
 			Type: addUserOperationType,
 			Value: marshalAddUserOperation(wireUser{
 				Email:   email,
-				Account: wireAccount{Type: vlessAccountType, ID: id, Flow: visionFlow},
+				Account: wireAccount{Type: vlessAccountType, ID: id, Flow: c.flow},
 			}),
 		},
 	}

@@ -70,6 +70,41 @@ func TestValidateXrayOnlyConfiguration(t *testing.T) {
 	}
 }
 
+func TestLoadXrayFlow(t *testing.T) {
+	for _, tc := range []struct {
+		name, field, want string
+	}{
+		{"legacy-reality", "", "xtls-rprx-vision"},
+		{"websocket", "  flow: \"\"\n", ""},
+		{"explicit-reality", "  flow: xtls-rprx-vision\n", "xtls-rprx-vision"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := Load(writeConfig(t, `
+panel:
+  base_url: https://panel.example.com
+  key: secret
+  node_id: 9
+hy2:
+  enabled: false
+xray:
+  enabled: true
+`+tc.field))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Xray.Flow != tc.want {
+				t.Fatalf("flow = %q, want %q", cfg.Xray.Flow, tc.want)
+			}
+		})
+	}
+	cfg := Default()
+	cfg.Xray.Enabled = true
+	cfg.Xray.Flow = "vision-typo"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "xray.flow") {
+		t.Fatalf("expected flow validation error, got %v", err)
+	}
+}
+
 func TestValidateRequiresEnabledProtocol(t *testing.T) {
 	cfg := Default()
 	cfg.Panel.BaseURL = "https://panel.example.com"

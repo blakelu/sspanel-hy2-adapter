@@ -8,6 +8,7 @@ test:
 
 test-shell:
 	./scripts/test-sync-panel-port.sh
+	sh ./scripts/test-native-manager.sh
 
 vet:
 	go vet ./...

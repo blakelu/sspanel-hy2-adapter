@@ -24,11 +24,11 @@ wget -O /tmp/sspanel-native-manager.sh \
 
 菜单命令 `1` 安装、`2` 卸载全部项目服务和数据、`3` 重启、`4` 修改配置并重启、`0` 退出。也可直接传入命令，例如 Ubuntu 上运行 `sudo sh /tmp/sspanel-native-manager.sh 1`。安装完成后会创建 `/usr/local/sbin/sspanel-native-manager`，以后在 Ubuntu 上运行 `sudo sspanel-native-manager`，在 Alpine root shell 中直接运行即可。
 
-安装时选择 HY2 或 VLESS，依次填写 SSPanel 地址、MuKey、节点 ID、公网端口和 NAT 转发到本机的端口。**两项端口默认相同**；若 NAT 是 `23008/UDP → 23008/UDP`，本机监听端口也应填 `23008`。HY2 还需选择面板用户密码字段（`uuid` 或 `passwd`）、填写证书域名、ACME 邮箱、Cloudflare DNS API Token；VLESS 还需 REALITY 目标域名和 SNI。Adapter Token、HY2 统计密钥、VLESS 私钥和 Short ID 直接回车即自动生成；修改配置时回车保留已有值，输入 `new` 重新生成。Cloudflare Token 和 MuKey 必须自行提供，不能随机生成。
+安装时选择 HY2 或 VLESS；VLESS 再选择 REALITY 或 WebSocket + TLS（Cloudflare 橙云），修改配置时默认保留当前传输方式。依次填写 SSPanel 地址、MuKey、节点 ID、公网端口和 NAT 转发到本机的端口。**两项 NAT 端口默认相同**；若 NAT 是 `23008/UDP → 23008/UDP`，本机监听端口也应填 `23008`。WS 模式的公网端口是 Cloudflare 回源端口，客户端使用域名的 `443`，详见下方橙云部署章节。HY2 还需选择面板用户密码字段（`uuid` 或 `passwd`）、填写证书域名、ACME 邮箱、Cloudflare DNS API Token；REALITY 需目标域名和 SNI；WS/TLS 需橙云域名、WS 路径及源站证书、私钥文件路径。Adapter Token、HY2 统计密钥、REALITY 私钥和 Short ID 直接回车即自动生成；修改配置时回车保留已有值，输入 `new` 重新生成。Cloudflare Token 和 MuKey 必须自行提供，不能随机生成。
 
 脚本从本项目 GitHub `main` 的 `bin/` 下载 Adapter、Hysteria 或 Xray，依据仓库的 `bin/SHA256SUMS` 校验，再调用现有原生安装器创建服务并设置开机自启。若仓库是私有的或文件尚未推送，GitHub Raw 会返回 404，下载会停止且不会安装 404 文本。可用 `NATIVE_REPO_RAW_BASE` 指向同结构的可信镜像。配置和生成的密钥保存在 `/etc/sspanel-native/` 与 `/opt/sspanel-native/`，权限为 root 可读；HY2 证书和流量状态在 `/var/lib/sspanel-native/`。
 
-命令 `2` 会停止并移除 HY2/VLESS 服务、项目二进制、配置、证书、流量状态、日志和管理器本身；不会删除现有 Git 仓库，也不会卸载系统共享的 `curl`、`jq` 等软件包。卸载前脚本尝试上报最后一段流量，失败时需要明确输入 `FORCE` 才会继续。VLESS 安装结束会显示 REALITY Public Key 和 Short ID，供填写客户端；本项目不会修改 SSPanel 的订阅生成器。
+命令 `2` 会停止并移除 HY2/VLESS 服务、项目二进制、配置、项目目录内的证书、流量状态、日志和管理器本身；不会删除现有 Git 仓库，也不会卸载系统共享的 `curl`、`jq` 等软件包。外部路径上的 WS/TLS 证书和私钥不由脚本删除。卸载前脚本尝试上报最后一段流量，失败时需要明确输入 `FORCE` 才会继续。REALITY 安装结束会显示 Public Key 和 Short ID；WS/TLS 会显示域名、路径、客户端参数和链接模板；本项目不会修改 SSPanel 的订阅生成器。
 
 Alpine 首次部署建议先执行 `apk add ca-certificates curl`，确保 Adapter、Hysteria 能访问 HTTPS 面板、Cloudflare 和证书颁发机构；安装 VLESS 时还需 `apk add jq`，用于校验 Xray JSON。Ubuntu / Debian 对应的软件包为 `ca-certificates curl jq`（上面的交互安装会补齐缺少的包）。`curl` 也用于重装前上报最后一段流量。
 
@@ -43,7 +43,7 @@ NAT 网关把一个**公网端口**转发到本机**内部监听端口**：
 | HY2 | 30001/UDP | `native/hy2/server.yaml` 的 `listen` | 8443/UDP |
 | VLESS | 30002/TCP | `native/vless/server.json` 的 `inbounds[0].port` | 443/TCP |
 
-面板 `custom_config.offset_port_user` 填客户端看到的**公网端口**。此原生方案的内部监听端口固定由代理配置文件决定，不会按面板 `offset_port_node` 自动切换；如面板要求此字段，也填公网端口，并确保 NAT 转发规则指向本机内部端口。若修改公网端口，先更新 NAT 转发、面板节点和订阅配置。无需因此重启代理。管理端口 `18080/18081`、HY2 统计端口 `19999` 和 Xray API 端口 `10085` 只监听 `127.0.0.1`，不应转发到公网。
+HY2 / REALITY 直连模式的面板 `custom_config.offset_port_user` 填客户端看到的**公网端口**；WS/TLS 橙云模式填 Cloudflare 入口端口 `443`。此原生方案的内部监听端口固定由代理配置文件决定，不会按面板 `offset_port_node` 自动切换；直连模式如面板要求此字段，也填公网端口，并确保 NAT 转发规则指向本机内部端口。若修改公网端口，先更新 NAT 转发，直连模式更新面板节点和订阅，橙云模式更新 Cloudflare 回源端口规则。无需因此重启代理。管理端口 `18080/18081`、HY2 统计端口 `19999` 和 Xray API 端口 `10085` 只监听 `127.0.0.1`，不应转发到公网。
 
 Ubuntu 若已启用 UFW，还需放行**本机内部监听端口**，例如上表中的 HY2 用 `sudo ufw allow 8443/udp`，VLESS 用 `sudo ufw allow 443/tcp`；端口以实际配置为准。不要为了此部署开放本地管理端口，也无需仅为此步骤启用 UFW。
 
@@ -102,6 +102,18 @@ wget -qO- http://127.0.0.1:18080/healthz
 ```
 
 HY2 客户端凭据使用面板用户 UUID（若节点 API 不返回 UUID，可将 `adapter.yaml` 的 `credential_fields` 改为 `[passwd]`）。客户端连接地址和端口使用 NAT 公网地址与公网 UDP 端口，SNI 使用证书覆盖的域名。
+
+## VLESS + WebSocket + TLS（Cloudflare 橙云）
+
+交互管理器选择 `1 安装 → 2 VLESS → 2 WebSocket + TLS`。已有 VLESS 使用 `4 修改配置并重启 → 2 VLESS` 切换传输方式；回车保留当前方式。REALITY 与 WS/TLS 共用 VLESS 服务，切换会替换该服务配置；HY2 不受影响。
+
+填写开启橙云的域名、WebSocket 路径（默认 `/vless`）、覆盖该域名的 PEM 源站证书和私钥的绝对路径。可以使用 Cloudflare Origin CA 证书或公开受信任证书；文件必须预先放到服务器可读的位置。脚本校验配置，直接引用文件，不负责申请、复制或续期；更换证书后用菜单 `3` 重启 VLESS。Cloudflare 的 SSL/TLS 模式使用 **Full (strict)**，并开启 WebSockets。[Origin CA 配置说明](https://developers.cloudflare.com/ssl/origin-configuration/origin-ca/)。
+
+端口分三层：客户端始终连接 **橙云域名:443**；脚本询问的 NAT 公网端口是 **Cloudflare 回源端口**；本机端口是 NAT 转发到 Xray 的监听端口。例如 `客户端 → Cloudflare:443 → NAT:30002 → Xray:8443`。回源公网端口不是 `443` 时，必须在 Cloudflare 配置匹配该域名的 Origin Rule，将 destination port 改为该 NAT 公网端口；NAT、防火墙也须允许 Cloudflare 回源。[Cloudflare 回源端口规则](https://developers.cloudflare.com/rules/origin-rules/features/#destination-port)。
+
+客户端及面板订阅配置：地址使用橙云域名，`offset_port_user=443`，传输 `ws`，TLS 开启，SNI 与 WS Host 均为该域名，路径与服务端一致，**flow 留空**，UUID 使用 SSPanel 用户 UUID。不要沿用 REALITY 的 flow、公钥或 Short ID。安装结束会显示可替换 `USER_UUID` 的链接模板；本项目不会修改面板订阅生成器。
+
+WS 模式生成 `inbound_tag: vless-ws` 和 `xray.flow: ""`，Adapter 继续同步用户并统计流量。旧配置不填写 `xray.flow` 时仍默认 `xtls-rprx-vision`。切换 WS 时，管理器会更新不支持该配置的旧 Adapter，并在停止服务前校验；下载源必须同时发布新版脚本、Adapter 二进制和 SHA256SUMS。
 
 ## VLESS + REALITY / Vision
 

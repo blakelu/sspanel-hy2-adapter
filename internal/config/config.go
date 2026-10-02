@@ -84,6 +84,7 @@ type XrayConfig struct {
 	Enabled      bool     `yaml:"enabled"`
 	APIAddress   string   `yaml:"api_address"`
 	InboundTag   string   `yaml:"inbound_tag"`
+	Flow         string   `yaml:"flow"`
 	Timeout      Duration `yaml:"timeout"`
 	SyncInterval Duration `yaml:"sync_interval"`
 	PollInterval Duration `yaml:"poll_interval"`
@@ -131,6 +132,7 @@ func Default() Config {
 		Xray: XrayConfig{
 			APIAddress:   "127.0.0.1:10085",
 			InboundTag:   "vless-reality",
+			Flow:         "xtls-rprx-vision",
 			Timeout:      Duration(5 * time.Second),
 			SyncInterval: Duration(30 * time.Second),
 			PollInterval: Duration(60 * time.Second),
@@ -245,6 +247,9 @@ func (c Config) Validate() error {
 		}
 		if c.Xray.InboundTag == "" {
 			errs = append(errs, errors.New("xray.inbound_tag is required"))
+		}
+		if c.Xray.Flow != "" && c.Xray.Flow != "xtls-rprx-vision" {
+			errs = append(errs, errors.New("xray.flow must be empty (WebSocket) or xtls-rprx-vision (REALITY)"))
 		}
 		if c.Xray.Timeout.Value() <= 0 || c.Xray.SyncInterval.Value() <= 0 || c.Xray.PollInterval.Value() <= 0 {
 			errs = append(errs, errors.New("xray timeout, sync_interval, and poll_interval must be positive"))

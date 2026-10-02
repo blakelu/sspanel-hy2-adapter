@@ -19,6 +19,7 @@ type fakeUserClient struct {
 	users   map[string]UserSpec
 	added   []string
 	removed []string
+	flow    string
 }
 
 func (f *fakeUserClient) ListUsers(context.Context) (map[string]UserSpec, error) {
@@ -31,7 +32,7 @@ func (f *fakeUserClient) ListUsers(context.Context) (map[string]UserSpec, error)
 
 func (f *fakeUserClient) AddUser(_ context.Context, email, id string) error {
 	f.added = append(f.added, email+"="+id)
-	f.users[email] = UserSpec{ID: id, Flow: visionFlow}
+	f.users[email] = UserSpec{ID: id, Flow: f.flow}
 	return nil
 }
 
@@ -50,12 +51,12 @@ func TestSynchronizerReconcilesUsers(t *testing.T) {
 		{ID: 7, UUID: "new-id"},
 		{ID: 9, UUID: "ninth-id"},
 	}}
-	client := &fakeUserClient{users: map[string]UserSpec{
+	client := &fakeUserClient{flow: visionFlow, users: map[string]UserSpec{
 		"7": {ID: "old-id", Flow: visionFlow},
 		"8": {ID: "revoked-id", Flow: visionFlow},
 	}}
 	collector := &fakeCollector{}
-	syncer := NewSynchronizer(provider, client, collector, time.Minute, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	syncer := NewSynchronizer(provider, client, collector, time.Minute, slog.New(slog.NewTextHandler(io.Discard, nil)), visionFlow)
 	if err := syncer.Sync(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -80,5 +81,20 @@ func TestDesiredUsersRejectsSharedUUID(t *testing.T) {
 	want := map[string]string{"2": "unique"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("desired users = %#v, want %#v", got, want)
+	}
+}
+
+func TestSynchronizerClearsVisionForWebSocket(t *testing.T) {
+	provider := fakeProvider{users: []panel.User{{ID: 7, UUID: "same-id"}}}
+	client := &fakeUserClient{users: map[string]UserSpec{"7": {ID: "same-id", Flow: visionFlow}}}
+	collector := &fakeCollector{}
+	syncer := NewSynchronizer(provider, client, collector, time.Minute, slog.New(slog.NewTextHandler(io.Discard, nil)), "")
+	for i := 0; i < 2; i++ {
+		if err := syncer.Sync(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if client.users["7"].Flow != "" || len(client.added) != 1 || len(client.removed) != 1 || collector.calls != 1 {
+		t.Fatalf("WebSocket flow was not reconciled once: client=%#v collector=%#v", client, collector)
 	}
 }

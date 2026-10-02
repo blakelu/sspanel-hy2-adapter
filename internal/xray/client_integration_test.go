@@ -49,7 +49,7 @@ func TestClientAgainstXray(t *testing.T) {
 		_ = command.Wait()
 	})
 
-	client, err := New(fmt.Sprintf("127.0.0.1:%d", apiPort), "vless-reality", time.Second)
+	client, err := New(fmt.Sprintf("127.0.0.1:%d", apiPort), "vless-reality", visionFlow, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}

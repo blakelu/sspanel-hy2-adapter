@@ -30,11 +30,12 @@ type Synchronizer struct {
 	collector TrafficCollector
 	interval  time.Duration
 	logger    *slog.Logger
+	flow      string
 	mu        sync.Mutex
 }
 
-func NewSynchronizer(provider auth.UserProvider, client UserClient, collector TrafficCollector, interval time.Duration, logger *slog.Logger) *Synchronizer {
-	return &Synchronizer{provider: provider, client: client, collector: collector, interval: interval, logger: logger}
+func NewSynchronizer(provider auth.UserProvider, client UserClient, collector TrafficCollector, interval time.Duration, logger *slog.Logger, flow string) *Synchronizer {
+	return &Synchronizer{provider: provider, client: client, collector: collector, interval: interval, logger: logger, flow: flow}
 }
 
 func (s *Synchronizer) Run(ctx context.Context) {
@@ -70,7 +71,7 @@ func (s *Synchronizer) Sync(ctx context.Context) error {
 
 	remove := make([]string, 0)
 	for email, user := range current {
-		if desiredID, ok := desired[email]; !ok || desiredID != user.ID || user.Flow != visionFlow {
+		if desiredID, ok := desired[email]; !ok || desiredID != user.ID || user.Flow != s.flow {
 			remove = append(remove, email)
 		}
 	}

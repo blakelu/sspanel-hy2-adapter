@@ -36,6 +36,7 @@ func main() {
 func run() error {
 	configPath := flag.String("config", "config.yaml", "path to the YAML configuration file")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	checkConfig := flag.Bool("check-config", false, "validate configuration and exit without contacting the panel")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println(version)
@@ -45,6 +46,10 @@ func run() error {
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		return err
+	}
+	if *checkConfig {
+		fmt.Println("configuration valid")
+		return nil
 	}
 	logger := newLogger(cfg.Log.Level)
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -81,13 +86,13 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		xrayClient, err := xray.New(cfg.Xray.APIAddress, cfg.Xray.InboundTag, cfg.Xray.Timeout.Value())
+		xrayClient, err := xray.New(cfg.Xray.APIAddress, cfg.Xray.InboundTag, cfg.Xray.Flow, cfg.Xray.Timeout.Value())
 		if err != nil {
 			return err
 		}
 		defer xrayClient.Close()
 		collector := stats.NewCollector(xrayClient, panelClient, state, cfg.Xray.PollInterval.Value(), cfg.Xray.RunOnStartup, logger)
-		synchronizer := xray.NewSynchronizer(userProvider, xrayClient, collector, cfg.Xray.SyncInterval.Value(), logger)
+		synchronizer := xray.NewSynchronizer(userProvider, xrayClient, collector, cfg.Xray.SyncInterval.Value(), logger, cfg.Xray.Flow)
 		if err := synchronizer.Sync(ctx); err != nil {
 			return fmt.Errorf("initial Xray user synchronization: %w", err)
 		}

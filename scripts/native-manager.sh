@@ -143,7 +143,7 @@ mode_names() {
 }
 choose_mode() {
     say '1) HY2' >&2
-    say '2) VLESS + REALITY' >&2
+    say '2) VLESS（REALITY / WebSocket + TLS）' >&2
     say '0) 返回' >&2
     choice=$(ask '选择协议' '' no)
     case "$choice" in 1) printf 'hy2\n' ;; 2) printf 'vless\n' ;; 0) printf '\n' ;; *) say '无效选择。' >&2; printf '\n' ;; esac
@@ -237,8 +237,9 @@ setting() {
     setting_key=$2
     setting_file="$MANAGED_DIR/settings/$setting_mode.conf"
     if [ -f "$setting_file" ]; then
-        awk -v key="$setting_key" '$0 ~ "^" key "=" { sub(/^[^=]*=/, ""); print; exit }' "$setting_file"
-        return
+        if awk -v key="$setting_key" '$0 ~ "^" key "=" { sub(/^[^=]*=/, ""); print; found=1; exit } END { exit !found }' "$setting_file"; then
+            return
+        fi
     fi
     setting_env="/etc/sspanel-native/$setting_mode/server.env"
     setting_config="/etc/sspanel-native/$setting_mode/server.yaml"
@@ -262,7 +263,21 @@ setting() {
                     jq -r '.inbounds[0].port // empty' "$setting_config"
                 fi
             fi ;;
-        DOMAIN) [ -f "$setting_config" ] && awk '/^  domains:/ { found=1; next } found && /^    - / { print $2; exit }' "$setting_config" ;;
+        DOMAIN)
+            if [ -f "$setting_config" ]; then
+                if [ "$setting_mode" = hy2 ]; then
+                    awk '/^  domains:/ { found=1; next } found && /^    - / { print $2; exit }' "$setting_config"
+                else
+                    jq -r '.inbounds[0].streamSettings.tlsSettings.serverName // empty' "$setting_config"
+                fi
+            fi ;;
+        VLESS_TRANSPORT)
+            if [ -f "$setting_config" ]; then
+                jq -r 'if .inbounds[0].streamSettings.network == "ws" then "ws-tls" else "reality" end' "$setting_config"
+            fi ;;
+        WS_PATH) [ -f "$setting_config" ] && jq -r '.inbounds[0].streamSettings.wsSettings.path // empty' "$setting_config" ;;
+        TLS_CERT_FILE) [ -f "$setting_config" ] && jq -r '.inbounds[0].streamSettings.tlsSettings.certificates[0].certificateFile // empty' "$setting_config" ;;
+        TLS_KEY_FILE) [ -f "$setting_config" ] && jq -r '.inbounds[0].streamSettings.tlsSettings.certificates[0].keyFile // empty' "$setting_config" ;;
         EMAIL) [ -f "$setting_config" ] && awk '/^  email:/ { print $2; exit }' "$setting_config" ;;
         CF_TOKEN) [ -f "$setting_config" ] && awk '/^      cloudflare_api_token:/ { print $2; exit }' "$setting_config" ;;
         CREDENTIAL_FIELD)
@@ -288,7 +303,11 @@ write_settings() {
         if [ "$MODE" = hy2 ]; then
             printf 'DOMAIN=%s\nEMAIL=%s\nCF_TOKEN=%s\nSTATS_SECRET=%s\nCREDENTIAL_FIELD=%s\n' \
                 "$DOMAIN" "$EMAIL" "$CF_TOKEN" "$STATS_SECRET" "$CREDENTIAL_FIELD"
+        elif [ "$VLESS_TRANSPORT" = ws-tls ]; then
+            printf 'VLESS_TRANSPORT=ws-tls\nDOMAIN=%s\nWS_PATH=%s\nTLS_CERT_FILE=%s\nTLS_KEY_FILE=%s\n' \
+                "$DOMAIN" "$WS_PATH" "$TLS_CERT_FILE" "$TLS_KEY_FILE"
         else
+            printf 'VLESS_TRANSPORT=reality\n'
             printf 'TARGET=%s\nSNI=%s\nREALITY_PRIVATE=%s\nSHORT_ID=%s\n' "$TARGET" "$SNI" "$REALITY_PRIVATE" "$SHORT_ID"
         fi
     } > "$settings_file.new"
@@ -309,7 +328,15 @@ prompt_common() {
     safe_token "$ADAPTER_TOKEN" || die '鉴权密钥只能包含字母、数字、下划线和连字符'
     default_local=$(default_of "$MODE" LOCAL_PORT '')
     default_public=$(default_of "$MODE" PUBLIC_PORT "$default_local")
-    PUBLIC_PORT=$(port_prompt "NAT 公网 $PROTOCOL 端口" "$default_public")
+    if [ "$MODE" = vless ] && [ "$VLESS_TRANSPORT" = ws-tls ]; then
+        say '客户端固定连接 Cloudflare 域名的 443；下方填写 Cloudflare 回源使用的 NAT 公网端口。' >&2
+        PUBLIC_PORT=$(port_prompt 'Cloudflare 回源 NAT 公网 TCP 端口' "${default_public:-443}")
+        if [ "$PUBLIC_PORT" != 443 ]; then
+            say "必须在 Cloudflare 为该域名配置 Origin Rule，将目标端口改为 $PUBLIC_PORT；客户端仍使用 443。" >&2
+        fi
+    else
+        PUBLIC_PORT=$(port_prompt "NAT 公网 $PROTOCOL 端口" "$default_public")
+    fi
     LOCAL_PORT=$(port_prompt "NAT 转发到本机的 $PROTOCOL 端口" "${default_local:-$PUBLIC_PORT}")
 }
 prompt_hy2() {
@@ -325,7 +352,43 @@ prompt_hy2() {
     STATS_SECRET=$(random_value 'HY2 统计密钥' "$(setting hy2 STATS_SECRET)" 32)
     safe_token "$STATS_SECRET" || die '统计密钥只能包含字母、数字、下划线和连字符'
 }
-prompt_vless() {
+choose_vless_transport() {
+    transport_current=$(default_of vless VLESS_TRANSPORT reality)
+    case "$transport_current" in reality) transport_default=1 ;; ws-tls) transport_default=2 ;; *) die '未知 VLESS 传输方式' ;; esac
+    say '1) VLESS + REALITY（直连）' >&2
+    say '2) VLESS + WebSocket + TLS（Cloudflare 橙云，客户端 443）' >&2
+    while :; do
+        transport_choice=$(ask '选择 VLESS 传输方式' "$transport_default" no)
+        case "$transport_choice" in
+            1) VLESS_TRANSPORT=reality; return ;;
+            2) VLESS_TRANSPORT=ws-tls; return ;;
+            *) say '无效选择。' >&2 ;;
+        esac
+    done
+}
+prompt_vless_ws() {
+    DOMAIN=$(required 'Cloudflare 橙云域名（客户端地址 / SNI / WS Host）' "$(setting vless DOMAIN)" no)
+    dns_name "$DOMAIN" || die '域名格式不正确'
+    DOMAIN=$(printf '%s' "$DOMAIN" | tr '[:upper:]' '[:lower:]')
+    WS_PATH=$(required 'WebSocket 路径（以 / 开头）' "$(default_of vless WS_PATH /vless)" no)
+    printf '%s\n' "$WS_PATH" | grep -Eq '^/[A-Za-z0-9/_-]*$' || die '路径必须以 / 开头，只能包含字母、数字、/、_、-'
+    say '请先准备覆盖该域名的 PEM 证书和私钥（支持 Cloudflare Origin CA）；Cloudflare SSL/TLS 设为 Full (strict)。' >&2
+    TLS_CERT_FILE=$(required '源站 TLS 证书绝对路径' "$(setting vless TLS_CERT_FILE)" no)
+    TLS_KEY_FILE=$(required '源站 TLS 私钥绝对路径' "$(setting vless TLS_KEY_FILE)" no)
+    for tls_file in "$TLS_CERT_FILE" "$TLS_KEY_FILE"; do
+        case "$tls_file" in /*) ;; *) die '证书和私钥必须使用绝对路径' ;; esac
+        safe_scalar "$tls_file" || die '证书路径含有不支持的字符'
+        if [ ! -f "$tls_file" ] || [ ! -r "$tls_file" ] || [ ! -s "$tls_file" ]; then
+            die "证书文件不存在、不可读或为空：$tls_file"
+        fi
+    done
+    # Old cached adapters reject xray.flow. Upgrade before stopping any service.
+    if ! "$MANAGED_DIR/bin/sspanel-hy2-adapter-linux" -h 2>&1 | grep -q -- '-check-config'; then
+        say '更新 Adapter 以支持 WebSocket 空 flow。' >&2
+        fetch_assets vless
+    fi
+}
+prompt_vless_reality() {
     TARGET=$(required 'REALITY 目标域名（需支持 TLS 1.3）' "$(setting vless TARGET)" no)
     dns_name "$TARGET" || die '目标域名格式不正确'
     SNI=$(required 'REALITY 客户端 SNI' "$(default_of vless SNI "$TARGET")" no)
@@ -390,7 +453,8 @@ xray:
 log:
   level: warn
 EOF
-        sed -i "s/credential_fields: \[uuid\]/credential_fields: [$CREDENTIAL_FIELD]/" "$STAGE/adapter.yaml"
+        sed "s/credential_fields: \[uuid\]/credential_fields: [$CREDENTIAL_FIELD]/" "$STAGE/adapter.yaml" > "$STAGE/adapter.yaml.new"
+        mv "$STAGE/adapter.yaml.new" "$STAGE/adapter.yaml"
         cat > "$STAGE/server.yaml" <<EOF
 listen: 0.0.0.0:$LOCAL_PORT
 acme:
@@ -453,7 +517,34 @@ xray:
 log:
   level: warn
 EOF
-        cat > "$STAGE/server.json" <<EOF
+        if [ "$VLESS_TRANSPORT" = ws-tls ]; then
+            sed 's/inbound_tag: vless-reality/inbound_tag: vless-ws/' "$STAGE/adapter.yaml" | \
+                awk '{ print } /inbound_tag: vless-ws/ { print "  flow: \"\"" }' > "$STAGE/adapter.yaml.new"
+            mv "$STAGE/adapter.yaml.new" "$STAGE/adapter.yaml"
+            jq -n --argjson port "$LOCAL_PORT" --arg domain "$DOMAIN" --arg path "$WS_PATH" \
+                --arg cert "$TLS_CERT_FILE" --arg key "$TLS_KEY_FILE" '{
+                log: {loglevel: "warning"},
+                api: {tag: "api", listen: "127.0.0.1:10085", services: ["HandlerService", "StatsService"]},
+                stats: {},
+                policy: {levels: {"0": {statsUserUplink: true, statsUserDownlink: true}}},
+                inbounds: [{
+                    tag: "vless-ws", listen: "0.0.0.0", port: $port, protocol: "vless",
+                    settings: {clients: [], decryption: "none"},
+                    streamSettings: {
+                        network: "ws", security: "tls",
+                        tlsSettings: {serverName: $domain, minVersion: "1.2", alpn: ["http/1.1"],
+                            certificates: [{certificateFile: $cert, keyFile: $key}]},
+                        wsSettings: {path: $path, host: $domain}
+                    },
+                    sniffing: {enabled: true, destOverride: ["http", "tls"]}
+                }],
+                outbounds: [{tag: "direct", protocol: "freedom"}, {tag: "block", protocol: "blackhole"}]
+            }' > "$STAGE/server.json"
+            ADAPTER_AUTH_TOKEN=$ADAPTER_TOKEN SSPANEL_BASE_URL=$PANEL_URL SSPANEL_MU_KEY=$MU_KEY SSPANEL_NODE_ID=$NODE_ID \
+                "$MANAGED_DIR/bin/sspanel-hy2-adapter-linux" -check-config -config "$STAGE/adapter.yaml" >/dev/null ||
+                die 'Adapter 不支持 WebSocket 配置；请确认下载源已发布新版 Adapter'
+        else
+            cat > "$STAGE/server.json" <<EOF
 {
   "log": { "loglevel": "warning" },
   "api": { "tag": "api", "listen": "127.0.0.1:10085", "services": ["HandlerService", "StatsService"] },
@@ -478,6 +569,7 @@ EOF
   ]
 }
 EOF
+        fi
         jq -e . "$STAGE/server.json" >/dev/null || die 'Xray JSON 无效'
         "$MANAGED_DIR/bin/xray-linux" run -test -config "$STAGE/server.json" >/dev/null || die 'Xray 配置校验失败'
     fi
@@ -497,11 +589,23 @@ deploy_config() {
     rm -rf -- "$STAGE"
     STAGE=
     wait_listener "$LOCAL_PORT"
-    say "完成。客户端使用 NAT 公网 $PROTOCOL 端口 $PUBLIC_PORT；本机监听 $LOCAL_PORT。"
-    say "请确认面板节点 offset_port_user 为 $PUBLIC_PORT，并确保 NAT 的 $PROTOCOL 转发目标为本机 $LOCAL_PORT。"
+    if [ "$MODE" = vless ] && [ "$VLESS_TRANSPORT" = ws-tls ]; then
+        say "完成。客户端连接 $DOMAIN:443；Cloudflare 回源 NAT TCP $PUBLIC_PORT → 本机 $LOCAL_PORT。"
+        say 'Cloudflare：DNS 开启橙云，SSL/TLS 使用 Full (strict)，开启 WebSockets。'
+        if [ "$PUBLIC_PORT" != 443 ]; then
+            say "Cloudflare Origin Rule：匹配域名 $DOMAIN，将目标端口改为 $PUBLIC_PORT。"
+        fi
+        say "客户端：VLESS / ws / TLS；SNI 和 Host 为 $DOMAIN；路径 $WS_PATH；flow 留空；UUID 使用 SSPanel 用户 UUID。"
+        say '面板订阅应使用橙云域名、offset_port_user=443 及相同 WS/TLS 参数。'
+        ws_uri_path=$(printf '%s' "$WS_PATH" | sed 's|/|%2F|g')
+        say "链接模板（替换 USER_UUID）：vless://USER_UUID@$DOMAIN:443?encryption=none&security=tls&sni=$DOMAIN&type=ws&host=$DOMAIN&path=$ws_uri_path#VLESS-WS-TLS"
+    else
+        say "完成。客户端使用 NAT 公网 $PROTOCOL 端口 $PUBLIC_PORT；本机监听 $LOCAL_PORT。"
+        say "请确认面板节点 offset_port_user 为 $PUBLIC_PORT，并确保 NAT 的 $PROTOCOL 转发目标为本机 $LOCAL_PORT。"
+    fi
     if [ "$MODE" = hy2 ]; then
         say "SNI：$DOMAIN；密码使用 SSPanel 用户的 $CREDENTIAL_FIELD。"
-    else
+    elif [ "$VLESS_TRANSPORT" = reality ]; then
         say "REALITY SNI：$SNI；Public Key：$REALITY_PUBLIC；Short ID：$SHORT_ID。"
         say '客户端 UUID 为 SSPanel 用户 UUID，flow 为 xtls-rprx-vision。'
     fi
@@ -511,8 +615,15 @@ deploy_config() {
 configure_mode() {
     MODE=$1
     mode_names "$MODE"
+    if [ "$MODE" = vless ]; then choose_vless_transport; fi
     prompt_common
-    if [ "$MODE" = hy2 ]; then prompt_hy2; else prompt_vless; fi
+    if [ "$MODE" = hy2 ]; then
+        prompt_hy2
+    elif [ "$VLESS_TRANSPORT" = ws-tls ]; then
+        prompt_vless_ws
+    else
+        prompt_vless_reality
+    fi
     write_config
     deploy_config
 }
