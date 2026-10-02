@@ -24,7 +24,7 @@ wget -O /tmp/sspanel-native-manager.sh \
 
 菜单命令 `1` 安装、`2` 卸载全部项目服务和数据、`3` 重启、`4` 修改配置并重启、`0` 退出。也可直接传入命令，例如 Ubuntu 上运行 `sudo sh /tmp/sspanel-native-manager.sh 1`。安装完成后会创建 `/usr/local/sbin/sspanel-native-manager`，以后在 Ubuntu 上运行 `sudo sspanel-native-manager`，在 Alpine root shell 中直接运行即可。
 
-安装时选择 HY2 或 VLESS；VLESS 再选择 REALITY 或 WebSocket + TLS（Cloudflare 橙云），修改配置时默认保留当前传输方式。依次填写 SSPanel 地址、MuKey、节点 ID、公网端口和 NAT 转发到本机的端口。**两项 NAT 端口默认相同**；若 NAT 是 `23008/UDP → 23008/UDP`，本机监听端口也应填 `23008`。WS 模式的公网端口是 Cloudflare 回源端口，客户端使用域名的 `443`，详见下方橙云部署章节。HY2 还需选择面板用户密码字段（`uuid` 或 `passwd`）、填写证书域名、ACME 邮箱、Cloudflare DNS API Token；REALITY 需目标域名和 SNI；WS/TLS 需橙云域名、WS 路径及源站证书、私钥文件路径。Adapter Token、HY2 统计密钥、REALITY 私钥和 Short ID 直接回车即自动生成；修改配置时回车保留已有值，输入 `new` 重新生成。Cloudflare Token 和 MuKey 必须自行提供，不能随机生成。
+安装时选择 HY2 或 VLESS；VLESS 再选择 REALITY 或 WebSocket + TLS（Cloudflare 橙云），修改配置时默认保留当前传输方式。依次填写 SSPanel 地址、MuKey、节点 ID、公网端口和 NAT 转发到本机的端口。**两项 NAT 端口默认相同**；若 NAT 是 `23008/UDP → 23008/UDP`，本机监听端口也应填 `23008`。WS 模式的公网端口是 Cloudflare 回源端口，客户端使用域名的 `443`，详见下方橙云部署章节。HY2 还需选择面板用户密码字段（`uuid` 或 `passwd`）、填写证书域名、ACME 邮箱、Cloudflare DNS API Token；REALITY 需目标域名和 SNI；WS/TLS 需橙云域名、WS 路径，再选择自动申请证书（邮箱、CF Token、Zone ID）或手动证书路径。Adapter Token、HY2 统计密钥、REALITY 私钥和 Short ID 直接回车即自动生成；修改配置时回车保留已有值，输入 `new` 重新生成。Cloudflare Token 和 MuKey 必须自行提供，不能随机生成。
 
 脚本从本项目 GitHub `main` 的 `bin/` 下载 Adapter、Hysteria 或 Xray，依据仓库的 `bin/SHA256SUMS` 校验，再调用现有原生安装器创建服务并设置开机自启。若仓库是私有的或文件尚未推送，GitHub Raw 会返回 404，下载会停止且不会安装 404 文本。可用 `NATIVE_REPO_RAW_BASE` 指向同结构的可信镜像。配置和生成的密钥保存在 `/etc/sspanel-native/` 与 `/opt/sspanel-native/`，权限为 root 可读；HY2 证书和流量状态在 `/var/lib/sspanel-native/`。
 
@@ -107,7 +107,18 @@ HY2 客户端凭据使用面板用户 UUID（若节点 API 不返回 UUID，可�
 
 交互管理器选择 `1 安装 → 2 VLESS → 2 WebSocket + TLS`。已有 VLESS 使用 `4 修改配置并重启 → 2 VLESS` 切换传输方式；回车保留当前方式。REALITY 与 WS/TLS 共用 VLESS 服务，切换会替换该服务配置；HY2 不受影响。
 
-填写开启橙云的域名、WebSocket 路径（默认 `/vless`）、覆盖该域名的 PEM 源站证书和私钥的绝对路径。可以使用 Cloudflare Origin CA 证书或公开受信任证书；文件必须预先放到服务器可读的位置。脚本校验配置，直接引用文件，不负责申请、复制或续期；更换证书后用菜单 `3` 重启 VLESS。Cloudflare 的 SSL/TLS 模式使用 **Full (strict)**，并开启 WebSockets。[Origin CA 配置说明](https://developers.cloudflare.com/ssl/origin-configuration/origin-ca/)。
+填写开启橙云的域名、WebSocket 路径（默认 `/vless`），然后选择证书管理方式：
+
+- `1 自动申请并续期`：填写 ACME 邮箱、Cloudflare DNS API Token 和 **Zone ID**（域名概览页）。建议 Token 仅授予目标 Zone 的 **DNS Edit / Zone Read** 权限。脚本通过 acme.sh 的 `dns_cf` 做 DNS-01 验证，申请 **Let’s Encrypt** 证书，无需开放公网 80，也无需关闭橙云。Token、Zone ID 和邮箱会保存为 root 可读的配置用于续期。[acme.sh 的 Cloudflare DNS API 说明](https://github.com/acmesh-official/acme.sh/wiki/dnsapi#1-cloudflare-option)。
+- `2 手动指定路径`：填写覆盖该域名的 PEM 源站证书和私钥的绝对路径，可使用 Cloudflare Origin CA 或公开受信任证书；文件须预先放到服务器可读的位置。此模式不负责申请或续期外部证书。
+
+新安装默认自动模式；已使用手动证书的旧配置默认保留手动方式。自动模式会下载并校验固定版本 acme.sh 3.1.4 及 Cloudflare DNS 插件，补齐 `openssl`，将证书和 ACME 状态保存在 `/opt/sspanel-native/acme-vless/<域名>/`（随 `NATIVE_MANAGED_DIR` 调整）。切换为手动方式或 REALITY 后，管理器删除专用续期任务；卸载全部时一并清理项目证书和 ACME 状态，不删除外部路径证书。
+
+systemd 创建 `sspanel-native-vless-cert.timer`，每日检查并补跑关机期间错过的任务；Alpine OpenRC 在 `/etc/periodic/daily/` 安装专用脚本并启用 `crond`。acme.sh 根据证书的续期时间决定是否申请，不会每天强制重签。Xray 使用 `oneTimeLoading: false`，续期后的文件由 Xray 每小时自动热重载，无需重启代理或中断现有连接。[Xray 证书热重载说明](https://xtls.github.io/config/transports/tls.html#certificateobject)。
+
+可手动运行 `sudo sspanel-native-manager --renew-vless-cert` 检查续期；不需要输入，尚未到续期时间会正常跳过。systemd 用 `journalctl -u sspanel-native-vless-cert.service` 查看结果，OpenRC 查看 `/var/log/sspanel-native/vless-cert-renew.log`。申请或续期需要服务器能访问 GitHub Raw（首次下载）、Cloudflare API、Let’s Encrypt 和公网 DNS；Token 到期或被撤销后需用菜单 `4` 更新。自动申请失败会停止配置流程，定时续期失败会保留现有证书并在下次重试。
+
+Cloudflare 的 SSL/TLS 模式使用 **Full (strict)**，并开启 WebSockets。自动模式取得的是 Let’s Encrypt 证书；手动方式也可使用 Cloudflare Origin CA 证书。[Origin CA 配置说明](https://developers.cloudflare.com/ssl/origin-configuration/origin-ca/)。
 
 端口分三层：客户端始终连接 **橙云域名:443**；脚本询问的 NAT 公网端口是 **Cloudflare 回源端口**；本机端口是 NAT 转发到 Xray 的监听端口。例如 `客户端 → Cloudflare:443 → NAT:30002 → Xray:8443`。回源公网端口不是 `443` 时，必须在 Cloudflare 配置匹配该域名的 Origin Rule，将 destination port 改为该 NAT 公网端口；NAT、防火墙也须允许 Cloudflare 回源。[Cloudflare 回源端口规则](https://developers.cloudflare.com/rules/origin-rules/features/#destination-port)。
 

@@ -8,12 +8,21 @@ MANAGED_DIR=${NATIVE_MANAGED_DIR:-/opt/sspanel-native}
 MANAGER_BIN=/usr/local/sbin/sspanel-native-manager
 STAGE=
 TTY_STATE=
+ACME_LOCK=
+CERT_SYSTEMD_DIR=/etc/systemd/system
+CERT_PERIODIC_DIR=/etc/periodic/daily
+CERT_RENEW_LOG=/var/log/sspanel-native/vless-cert-renew.log
+CERT_LOCK_DIR=/run/sspanel-native-vless-cert.lock
 
 die() { printf '错误：%s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
+release_acme_lock() {
+    if [ -n "$ACME_LOCK" ]; then rmdir "$ACME_LOCK" 2>/dev/null || :; ACME_LOCK=; fi
+}
 cleanup() {
     if [ -n "$TTY_STATE" ]; then stty "$TTY_STATE" <&3 2>/dev/null || :; fi
     if [ -n "$STAGE" ] && [ -d "$STAGE" ]; then rm -rf -- "$STAGE"; fi
+    release_acme_lock
 }
 trap cleanup 0
 trap 'exit 130' 1 2 3 15
@@ -306,6 +315,10 @@ write_settings() {
         elif [ "$VLESS_TRANSPORT" = ws-tls ]; then
             printf 'VLESS_TRANSPORT=ws-tls\nDOMAIN=%s\nWS_PATH=%s\nTLS_CERT_FILE=%s\nTLS_KEY_FILE=%s\n' \
                 "$DOMAIN" "$WS_PATH" "$TLS_CERT_FILE" "$TLS_KEY_FILE"
+            printf 'TLS_CERT_MODE=%s\n' "$TLS_CERT_MODE"
+            if [ "$TLS_CERT_MODE" = acme ]; then
+                printf 'EMAIL=%s\nCF_TOKEN=%s\nCF_ZONE_ID=%s\n' "$EMAIL" "$CF_TOKEN" "$CF_ZONE_ID"
+            fi
         else
             printf 'VLESS_TRANSPORT=reality\n'
             printf 'TARGET=%s\nSNI=%s\nREALITY_PRIVATE=%s\nSHORT_ID=%s\n' "$TARGET" "$SNI" "$REALITY_PRIVATE" "$SHORT_ID"
@@ -372,9 +385,22 @@ prompt_vless_ws() {
     DOMAIN=$(printf '%s' "$DOMAIN" | tr '[:upper:]' '[:lower:]')
     WS_PATH=$(required 'WebSocket 路径（以 / 开头）' "$(default_of vless WS_PATH /vless)" no)
     printf '%s\n' "$WS_PATH" | grep -Eq '^/[A-Za-z0-9/_-]*$' || die '路径必须以 / 开头，只能包含字母、数字、/、_、-'
-    say '请先准备覆盖该域名的 PEM 证书和私钥（支持 Cloudflare Origin CA）；Cloudflare SSL/TLS 设为 Full (strict)。' >&2
-    TLS_CERT_FILE=$(required '源站 TLS 证书绝对路径' "$(setting vless TLS_CERT_FILE)" no)
-    TLS_KEY_FILE=$(required '源站 TLS 私钥绝对路径' "$(setting vless TLS_KEY_FILE)" no)
+    choose_vless_cert_mode
+    say 'Cloudflare SSL/TLS 请设为 Full (strict)。' >&2
+    if [ "$TLS_CERT_MODE" = acme ]; then
+        EMAIL=$(required 'ACME 联系邮箱' "$(setting vless EMAIL)" no)
+        safe_scalar "$EMAIL" || die '邮箱含有不支持的字符'
+        case "$EMAIL" in *@*.*) ;; *) die '邮箱格式不正确' ;; esac
+        CF_TOKEN=$(required 'Cloudflare DNS API Token（输入时隐藏）' "$(setting vless CF_TOKEN)" yes)
+        safe_token "$CF_TOKEN" || die 'Cloudflare Token 只能包含字母、数字、下划线和连字符'
+        CF_ZONE_ID=$(required 'Cloudflare Zone ID（域名概览页）' "$(setting vless CF_ZONE_ID)" no)
+        printf '%s\n' "$CF_ZONE_ID" | grep -Eq '^[0-9a-fA-F]{32}$' || die 'Zone ID 必须是 32 位十六进制字符'
+        prepare_vless_acme
+    else
+        say '请先准备覆盖该域名的 PEM 证书和私钥（支持 Cloudflare Origin CA）。' >&2
+        TLS_CERT_FILE=$(required '源站 TLS 证书绝对路径' "$(setting vless TLS_CERT_FILE)" no)
+        TLS_KEY_FILE=$(required '源站 TLS 私钥绝对路径' "$(setting vless TLS_KEY_FILE)" no)
+    fi
     for tls_file in "$TLS_CERT_FILE" "$TLS_KEY_FILE"; do
         case "$tls_file" in /*) ;; *) die '证书和私钥必须使用绝对路径' ;; esac
         safe_scalar "$tls_file" || die '证书路径含有不支持的字符'
@@ -386,6 +412,170 @@ prompt_vless_ws() {
     if ! "$MANAGED_DIR/bin/sspanel-hy2-adapter-linux" -h 2>&1 | grep -q -- '-check-config'; then
         say '更新 Adapter 以支持 WebSocket 空 flow。' >&2
         fetch_assets vless
+    fi
+}
+choose_vless_cert_mode() {
+    cert_current=$(setting vless TLS_CERT_MODE)
+    if [ -z "$cert_current" ]; then
+        if [ -n "$(setting vless TLS_CERT_FILE)" ]; then cert_current=manual; else cert_current=acme; fi
+    fi
+    case "$cert_current" in acme) cert_default=1 ;; manual) cert_default=2 ;; *) die '未知证书管理方式' ;; esac
+    say "1) 自动申请并续期（Let's Encrypt / Cloudflare DNS API）" >&2
+    say '2) 手动指定 PEM 证书和私钥路径' >&2
+    while :; do
+        cert_choice=$(ask '选择源站 TLS 证书管理方式' "$cert_default" no)
+        case "$cert_choice" in
+            1) TLS_CERT_MODE=acme; return ;;
+            2) TLS_CERT_MODE=manual; return ;;
+            *) say '无效选择。' >&2 ;;
+        esac
+    done
+}
+acme_paths() {
+    # Paths are also embedded in systemd/periodic jobs; keep them unambiguous.
+    printf '%s\n' "$MANAGED_DIR" | grep -Eq '^/[A-Za-z0-9._/-]+$' || die '自动证书模式要求管理目录为不含空格或特殊字符的绝对路径'
+    dns_name "$DOMAIN" || die '证书域名格式不正确'
+    ACME_CLIENT="$MANAGED_DIR/acme-client"
+    ACME_STATE="$MANAGED_DIR/acme-vless/$DOMAIN"
+    TLS_CERT_FILE="$ACME_STATE/tls/fullchain.pem"
+    TLS_KEY_FILE="$ACME_STATE/tls/key.pem"
+}
+acquire_acme_lock() {
+    install -d -m 700 "$MANAGED_DIR/acme-vless"
+    mkdir "$CERT_LOCK_DIR" 2>/dev/null || die "另一项证书操作正在运行；如进程已退出，请检查并移除 $CERT_LOCK_DIR 后重试"
+    ACME_LOCK=$CERT_LOCK_DIR
+}
+ensure_acme_client() {
+    if ! command -v openssl >/dev/null 2>&1; then
+        if command -v apk >/dev/null 2>&1; then apk add --no-cache openssl
+        elif command -v apt-get >/dev/null 2>&1; then apt-get update; DEBIAN_FRONTEND=noninteractive apt-get install -y openssl
+        else die '自动申请证书需要 openssl'; fi
+    fi
+    install -d -m 700 "$ACME_CLIENT" "$ACME_CLIENT/dnsapi" "$ACME_STATE/tls"
+    # acme.sh 3.1.4, pinned to its release commit and file SHA-256 values.
+    acme_base=https://raw.githubusercontent.com/acmesh-official/acme.sh/3661fd86b6304115e42f43910e6dd452ab9866d6
+    for acme_file in acme.sh dnsapi/dns_cf.sh; do
+        case "$acme_file" in
+            acme.sh) acme_sum=fcabf274d4f96966ec933879ae0257266e8ef2f7d16161f14b84dd896c0cac32 ;;
+            dnsapi/dns_cf.sh) acme_sum=9628ee8238cb3f9cfa1b1a985c0e9593436a3e4f8a9d65a6f775b981be9e76c8 ;;
+        esac
+        if printf '%s  %s\n' "$acme_sum" "$ACME_CLIENT/$acme_file" | sha256sum -c - >/dev/null 2>&1; then continue; fi
+        curl -fLsS --retry 3 --connect-timeout 10 --max-time 180 "$acme_base/$acme_file" \
+            -o "$ACME_CLIENT/$acme_file.new" || die "acme.sh 下载失败：$acme_file"
+        printf '%s  %s\n' "$acme_sum" "$ACME_CLIENT/$acme_file.new" | sha256sum -c - >/dev/null || die "acme.sh 校验失败：$acme_file"
+        chmod 700 "$ACME_CLIENT/$acme_file.new"
+        mv -f "$ACME_CLIENT/$acme_file.new" "$ACME_CLIENT/$acme_file"
+    done
+}
+acme_run() {
+    # renew/install source the domain config, which otherwise overrides rotated
+    # credentials passed in the environment. Use the manager's saved values.
+    acme_conf="$ACME_STATE/${DOMAIN}_ecc/$DOMAIN.conf"
+    if [ -f "$acme_conf" ]; then
+        sed '/^CF_Token=/d; /^CF_Zone_ID=/d; /^CF_Account_ID=/d' "$acme_conf" > "$acme_conf.new" || die '无法更新 ACME DNS 凭据'
+        chmod 600 "$acme_conf.new"
+        mv -f "$acme_conf.new" "$acme_conf"
+    fi
+    # Credentials stay out of argv; manager settings supply them at each run.
+    CF_Token=$CF_TOKEN CF_Zone_ID=$CF_ZONE_ID CF_Account_ID='' CF_Key='' CF_Email='' \
+        /bin/sh "$ACME_CLIENT/acme.sh" --home "$ACME_CLIENT" --config-home "$ACME_STATE" "$@"
+}
+install_vless_acme_cert() {
+    acme_run --install-cert -d "$DOMAIN" --ecc --key-file "$TLS_KEY_FILE" \
+        --fullchain-file "$TLS_CERT_FILE" --reloadcmd ':' || die '安装 ACME 证书失败'
+    chmod 600 "$TLS_KEY_FILE" "$TLS_CERT_FILE"
+    openssl x509 -in "$TLS_CERT_FILE" -noout -checkend 0 -checkhost "$DOMAIN" >/dev/null || die 'ACME 证书已过期或不覆盖该域名'
+}
+prepare_vless_acme() {
+    acme_paths
+    acquire_acme_lock
+    ensure_acme_client
+    say "自动申请 $DOMAIN 的 Let's Encrypt 证书（DNS-01，无需开放公网 80）。"
+    acme_result=0
+    acme_run --issue --server letsencrypt --dns dns_cf -d "$DOMAIN" --keylength ec-256 \
+        --accountemail "$EMAIL" || acme_result=$?
+    case "$acme_result" in 0|2) ;; *) die 'ACME 申请失败；请检查 Token、Zone ID、DNS 和 CA 连通性' ;; esac
+    # Exit 2 means an existing certificate is not due for renewal. Reinstall it.
+    install_vless_acme_cert
+}
+renew_vless_cert() {
+    [ "$(setting vless VLESS_TRANSPORT)" = ws-tls ] || return 0
+    [ "$(setting vless TLS_CERT_MODE)" = acme ] || return 0
+    DOMAIN=$(setting vless DOMAIN)
+    CF_TOKEN=$(setting vless CF_TOKEN)
+    CF_ZONE_ID=$(setting vless CF_ZONE_ID)
+    [ -n "$CF_TOKEN" ] && [ -n "$CF_ZONE_ID" ] || die '缺少已保存的 Cloudflare Token 或 Zone ID'
+    acme_paths
+    acquire_acme_lock
+    [ -f "$ACME_CLIENT/acme.sh" ] || die '缺少 acme.sh，请使用修改配置重新安装自动证书'
+    acme_result=0
+    acme_run --renew -d "$DOMAIN" --ecc --server letsencrypt || acme_result=$?
+    case "$acme_result" in 0|2) ;; *) die 'ACME 续期失败，将在下一次定时任务重试' ;; esac
+    install_vless_acme_cert
+    release_acme_lock
+}
+disable_vless_cert_renewal() {
+    if [ "$(init_system)" = systemd ]; then
+        if [ -f "$CERT_SYSTEMD_DIR/sspanel-native-vless-cert.timer" ]; then
+            systemctl disable --now sspanel-native-vless-cert.timer
+            systemctl stop sspanel-native-vless-cert.service
+            rm -f -- "$CERT_SYSTEMD_DIR/sspanel-native-vless-cert.timer" "$CERT_SYSTEMD_DIR/sspanel-native-vless-cert.service"
+            systemctl daemon-reload
+        fi
+    fi
+    rm -f -- "$CERT_PERIODIC_DIR/sspanel-native-vless-cert"
+}
+configure_vless_cert_renewal() {
+    if [ "$VLESS_TRANSPORT" != ws-tls ] || [ "$TLS_CERT_MODE" != acme ]; then
+        disable_vless_cert_renewal
+        return
+    fi
+    if [ "$(init_system)" = systemd ]; then
+        cat > "$CERT_SYSTEMD_DIR/sspanel-native-vless-cert.service" <<EOF
+[Unit]
+Description=Renew SSPanel VLESS TLS certificate with Cloudflare DNS
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=NATIVE_MANAGED_DIR=$MANAGED_DIR
+ExecStart=$MANAGER_BIN --renew-vless-cert
+UMask=0077
+EOF
+        cat > "$CERT_SYSTEMD_DIR/sspanel-native-vless-cert.timer" <<'EOF'
+[Unit]
+Description=Daily SSPanel VLESS TLS certificate renewal check
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+        chmod 644 "$CERT_SYSTEMD_DIR/sspanel-native-vless-cert.service" "$CERT_SYSTEMD_DIR/sspanel-native-vless-cert.timer"
+        systemctl daemon-reload
+        systemctl enable --now sspanel-native-vless-cert.timer
+    else
+        ensure_openrc_cert_cron
+        install -d -m 755 "$CERT_PERIODIC_DIR"
+        install -d -m 700 "$(dirname "$CERT_RENEW_LOG")"
+        cat > "$CERT_PERIODIC_DIR/sspanel-native-vless-cert" <<EOF
+#!/bin/sh
+umask 077
+NATIVE_MANAGED_DIR="$MANAGED_DIR" "$MANAGER_BIN" --renew-vless-cert >> "$CERT_RENEW_LOG" 2>&1
+EOF
+        chmod 700 "$CERT_PERIODIC_DIR/sspanel-native-vless-cert"
+        rc-update add crond default
+        service_active crond || service_start crond
+    fi
+}
+ensure_openrc_cert_cron() {
+    if [ ! -f /etc/init.d/crond ]; then
+        command -v apk >/dev/null 2>&1 || die 'OpenRC 自动续期需要 crond 服务'
+        apk add --no-cache busybox-openrc
     fi
 }
 prompt_vless_reality() {
@@ -533,7 +723,7 @@ EOF
                     streamSettings: {
                         network: "ws", security: "tls",
                         tlsSettings: {serverName: $domain, minVersion: "1.2", alpn: ["http/1.1"],
-                            certificates: [{certificateFile: $cert, keyFile: $key}]},
+                            certificates: [{certificateFile: $cert, keyFile: $key, oneTimeLoading: false}]},
                         wsSettings: {path: $path, host: $domain}
                     },
                     sniffing: {enabled: true, destOverride: ["http", "tls"]}
@@ -586,12 +776,19 @@ deploy_config() {
     write_settings
     install -d -m 755 "$(dirname "$MANAGER_BIN")"
     if [ "$0" != "$MANAGER_BIN" ]; then install -m 755 "$0" "$MANAGER_BIN"; fi
+    # Release the issuance lock before Persistent timers can start renewal.
+    release_acme_lock
+    if [ "$MODE" = vless ]; then configure_vless_cert_renewal; fi
     rm -rf -- "$STAGE"
     STAGE=
     wait_listener "$LOCAL_PORT"
     if [ "$MODE" = vless ] && [ "$VLESS_TRANSPORT" = ws-tls ]; then
         say "完成。客户端连接 $DOMAIN:443；Cloudflare 回源 NAT TCP $PUBLIC_PORT → 本机 $LOCAL_PORT。"
         say 'Cloudflare：DNS 开启橙云，SSL/TLS 使用 Full (strict)，开启 WebSockets。'
+        if [ "$TLS_CERT_MODE" = acme ]; then
+            say "证书：Let's Encrypt / Cloudflare DNS-01；已开启每日续期检查，Xray 每小时自动热重载证书。"
+            say "证书文件：$TLS_CERT_FILE；私钥文件：$TLS_KEY_FILE。"
+        fi
         if [ "$PUBLIC_PORT" != 443 ]; then
             say "Cloudflare Origin Rule：匹配域名 $DOMAIN，将目标端口改为 $PUBLIC_PORT。"
         fi
@@ -719,6 +916,7 @@ uninstall_all() {
     for uninstall_mode in hy2 vless; do
         if installed "$uninstall_mode"; then collect_or_confirm "$uninstall_mode"; fi
     done
+    disable_vless_cert_renewal
     for uninstall_mode in hy2 vless; do
         mode_names "$uninstall_mode"
         remove_service "$ADAPTER_SERVICE"
@@ -758,7 +956,8 @@ menu_action() {
     esac
 }
 
-if [ "$#" -gt 1 ]; then die '用法：native-manager.sh [0|1|2|3|4]'; fi
+if [ "$#" -gt 1 ]; then die '用法：native-manager.sh [0|1|2|3|4|--renew-vless-cert]'; fi
+if [ "$#" -eq 1 ] && [ "$1" = --renew-vless-cert ]; then renew_vless_cert; exit 0; fi
 if [ "$#" -eq 1 ]; then menu_action "$1"; exit 0; fi
 while :; do
     say ''
