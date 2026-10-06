@@ -60,6 +60,18 @@ case "$1" in
 esac
 EOF
 chmod +x "$test_root/mock-bin/systemctl"
+cat > "$test_root/mock-bin/sysctl" <<'EOF'
+#!/bin/sh
+# Never modify the Docker host kernel.
+case "$*" in
+    '-n net.ipv4.tcp_congestion_control')
+        if [ -f /run/anytls-test-congestion ]; then cat /run/anytls-test-congestion; else printf 'cubic\n'; fi ;;
+    '-n net.ipv4.tcp_available_congestion_control') printf 'reno cubic bbr\n' ;;
+    '-w net.ipv4.tcp_congestion_control='*) printf '%s\n' "${2#*=}" > /run/anytls-test-congestion ;;
+    *) exit 1 ;;
+esac
+EOF
+chmod +x "$test_root/mock-bin/sysctl"
 docker run --rm --platform linux/amd64 \
     -v "$project_dir:/workspace:ro" -v "$test_root:/fixtures:ro" \
     -w /workspace --entrypoint sh "${NATIVE_TEST_IMAGE:-sspanel-php-sub-tests:local}" -ec '
@@ -93,9 +105,31 @@ anytls.example.com
 2
 /fixtures/cert.pem
 /fixtures/key.pem
+1
 EOF
     curl -fsS http://127.0.0.1:18082/healthz
     grep -q "DOMAIN=anytls.example.com" /opt/sspanel-native/settings/anytls.conf
+    grep -qx "BBR_ENABLED=true" /opt/sspanel-native/settings/anytls.conf
+    [ "$(sysctl -n net.ipv4.tcp_congestion_control)" = bbr ]
+    grep -qx "net.ipv4.tcp_congestion_control = bbr" /etc/sysctl.d/zz-sspanel-native-anytls-bbr.conf
+    sh scripts/native-manager.sh 4 <<EOF
+3
+http://127.0.0.1:19080
+fixture-mukey
+16
+fixture-admin-token
+18443
+18443
+anytls.example.com
+2
+/fixtures/cert.pem
+/fixtures/key.pem
+2
+EOF
+    curl -fsS http://127.0.0.1:18082/healthz
+    grep -qx "BBR_ENABLED=false" /opt/sspanel-native/settings/anytls.conf
+    [ "$(sysctl -n net.ipv4.tcp_congestion_control)" = cubic ]
+    [ ! -f /etc/modules-load.d/sspanel-native-anytls-bbr.conf ]
     kill "$(cat /run/anytls-test.pid)"
     '
 printf '\nAnyTLS Linux installation and reinstallation passed\n'

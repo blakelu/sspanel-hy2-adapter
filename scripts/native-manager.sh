@@ -13,6 +13,9 @@ CERT_SYSTEMD_DIR=/etc/systemd/system
 CERT_PERIODIC_DIR=/etc/periodic/daily
 CERT_RENEW_LOG=/var/log/sspanel-native/vless-cert-renew.log
 CERT_LOCK_DIR=/run/sspanel-native-vless-cert.lock
+BBR_SYSCTL_FILE=/etc/sysctl.d/zz-sspanel-native-anytls-bbr.conf
+BBR_MODULE_FILE=/etc/modules-load.d/sspanel-native-anytls-bbr.conf
+BBR_MARKER='# Managed by sspanel-native-manager (AnyTLS BBR)'
 
 die() { printf '错误：%s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
@@ -344,6 +347,7 @@ write_settings() {
             printf 'DOMAIN=%s\nEMAIL=%s\nCF_TOKEN=%s\nSTATS_SECRET=%s\nCREDENTIAL_FIELD=%s\n' \
                 "$DOMAIN" "$EMAIL" "$CF_TOKEN" "$STATS_SECRET" "$CREDENTIAL_FIELD"
         elif [ "$MODE" = anytls ] || [ "$VLESS_TRANSPORT" = ws-tls ]; then
+            if [ "$MODE" = anytls ]; then printf 'BBR_ENABLED=%s\n' "${BBR_ENABLED:-false}"; fi
             if [ "$MODE" = vless ]; then printf 'VLESS_TRANSPORT=ws-tls\nWS_PATH=%s\n' "$WS_PATH"; fi
             printf 'DOMAIN=%s\nTLS_CERT_FILE=%s\nTLS_KEY_FILE=%s\n' "$DOMAIN" "$TLS_CERT_FILE" "$TLS_KEY_FILE"
             printf 'TLS_CERT_MODE=%s\n' "$TLS_CERT_MODE"
@@ -470,6 +474,108 @@ prompt_anytls() {
         safe_scalar "$tls_file" || die '证书路径含有不支持的字符'
         [ -r "$tls_file" ] && [ -s "$tls_file" ] || die "证书文件不存在、不可读或为空：$tls_file"
     done
+    choose_anytls_bbr
+}
+
+choose_anytls_bbr() {
+    bbr_current=$(setting anytls BBR_ENABLED)
+    if [ -z "$bbr_current" ]; then
+        if command -v sysctl >/dev/null 2>&1 && [ "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || :)" = bbr ]; then
+            bbr_current=true
+        else
+            bbr_current=false
+        fi
+    fi
+    case "$bbr_current" in true) bbr_default=1 ;; false) bbr_default=2 ;; *) die '未知 BBR 配置' ;; esac
+    say 'BBR 会修改整台 VPS 的 TCP 拥塞控制，对新连接生效。' >&2
+    say '1) 开启 BBR（检查内核支持并设置开机生效）' >&2
+    say '2) 关闭 BBR（恢复原非 BBR 算法，无法恢复时使用 cubic）' >&2
+    while :; do
+        bbr_choice=$(ask '是否开启 BBR' "$bbr_default" no)
+        case "$bbr_choice" in
+            1) BBR_ENABLED=true; return ;;
+            2) BBR_ENABLED=false; return ;;
+            *) say '无效选择。' >&2 ;;
+        esac
+    done
+}
+
+bbr_file_owned() { [ -f "$1" ] && [ "$(head -n 1 "$1")" = "$BBR_MARKER" ]; }
+bbr_original() {
+    bbr_saved="$MANAGED_DIR/settings/anytls-bbr/original-congestion"
+    [ -f "$bbr_saved" ] || return 0
+    bbr_value=$(cat "$bbr_saved")
+    printf '%s\n' "$bbr_value" | grep -Eq '^[a-z0-9_]+$' || die 'BBR 原拥塞控制记录无效'
+    printf '%s\n' "$bbr_value"
+}
+bbr_algorithm_available() {
+    sysctl -n net.ipv4.tcp_available_congestion_control | tr ' ' '\n' | grep -qx "$1"
+}
+configure_anytls_bbr() {
+    case "$BBR_ENABLED" in true|false) ;; *) die 'BBR_ENABLED 必须为 true 或 false' ;; esac
+    command -v sysctl >/dev/null 2>&1 || die '配置 BBR 需要 sysctl 命令'
+    bbr_before=$(sysctl -n net.ipv4.tcp_congestion_control) || die '无法读取 TCP 拥塞控制'
+    for bbr_file in "$BBR_SYSCTL_FILE" "$BBR_MODULE_FILE"; do
+        if [ -e "$bbr_file" ] && ! bbr_file_owned "$bbr_file"; then
+            die "BBR 配置路径已被其他工具使用：$bbr_file"
+        fi
+    done
+    bbr_prior=$(bbr_original)
+    if [ "$BBR_ENABLED" = true ]; then
+        if ! bbr_algorithm_available bbr; then
+            command -v modprobe >/dev/null 2>&1 || die '内核未提供 BBR，且没有 modprobe；请先安装内核对应模块'
+            modprobe tcp_bbr || die '内核不支持或无法加载 tcp_bbr；可重新运行并选择关闭 BBR'
+            bbr_algorithm_available bbr || die '当前内核不支持 BBR；可重新运行并选择关闭 BBR'
+        fi
+        bbr_target=bbr
+    else
+        bbr_target=${bbr_prior:-$bbr_before}
+        if [ "$bbr_target" = bbr ] || ! bbr_algorithm_available "$bbr_target"; then bbr_target=cubic; fi
+        bbr_algorithm_available "$bbr_target" || die "内核不支持关闭 BBR 时的算法：$bbr_target"
+        # With no managed override and BBR already off, leave system files alone.
+        if [ "$bbr_before" != bbr ] && [ ! -f "$BBR_SYSCTL_FILE" ]; then
+            say "BBR 未开启；保留系统 TCP 算法 ${bbr_before}。"
+            return 0
+        fi
+    fi
+    install -d -m 700 "$MANAGED_DIR/settings/anytls-bbr"
+    if [ -z "$bbr_prior" ]; then
+        printf '%s\n' "$bbr_before" > "$MANAGED_DIR/settings/anytls-bbr/original-congestion"
+        chmod 600 "$MANAGED_DIR/settings/anytls-bbr/original-congestion"
+    fi
+    # Store the original algorithm once; repeated installs must not replace it
+    # with bbr. Apply before the installer creates new listening sockets.
+    if [ "$bbr_before" != "$bbr_target" ]; then
+        sysctl -w "net.ipv4.tcp_congestion_control=$bbr_target" >/dev/null || die '修改 TCP 拥塞控制失败'
+    fi
+    mkdir -p "$(dirname "$BBR_SYSCTL_FILE")" "$(dirname "$BBR_MODULE_FILE")"
+    printf '%s\nnet.ipv4.tcp_congestion_control = %s\n' "$BBR_MARKER" "$bbr_target" > "$BBR_SYSCTL_FILE.new"
+    chmod 644 "$BBR_SYSCTL_FILE.new"
+    mv -f "$BBR_SYSCTL_FILE.new" "$BBR_SYSCTL_FILE"
+    if [ "$BBR_ENABLED" = true ]; then
+        printf '%s\ntcp_bbr\n' "$BBR_MARKER" > "$BBR_MODULE_FILE.new"
+        chmod 644 "$BBR_MODULE_FILE.new"
+        mv -f "$BBR_MODULE_FILE.new" "$BBR_MODULE_FILE"
+        say 'BBR 已开启并设置开机生效；不修改系统队列规则。'
+    else
+        rm -f -- "$BBR_MODULE_FILE"
+        say "BBR 已关闭；TCP 算法 $bbr_target 已设置开机生效。"
+    fi
+}
+
+remove_anytls_bbr() {
+    if bbr_file_owned "$BBR_SYSCTL_FILE"; then
+        bbr_managed=$(awk -F= '/^net.ipv4.tcp_congestion_control[[:space:]]*=/ { gsub(/[[:space:]]/, "", $2); print $2; exit }' "$BBR_SYSCTL_FILE")
+        bbr_prior=$(bbr_original)
+        # Preserve a later change made by the administrator or another tool.
+        if [ -n "$bbr_prior" ] && command -v sysctl >/dev/null 2>&1 &&
+           [ "$(sysctl -n net.ipv4.tcp_congestion_control)" = "$bbr_managed" ]; then
+            bbr_algorithm_available "$bbr_prior" || bbr_prior=cubic
+            sysctl -w "net.ipv4.tcp_congestion_control=$bbr_prior" >/dev/null || die '卸载时恢复 TCP 算法失败'
+        fi
+        rm -f -- "$BBR_SYSCTL_FILE"
+    fi
+    if bbr_file_owned "$BBR_MODULE_FILE"; then rm -f -- "$BBR_MODULE_FILE"; fi
 }
 choose_vless_cert_mode() {
     cert_current=$(setting "${MODE:-vless}" TLS_CERT_MODE)
@@ -874,6 +980,7 @@ EOF
 }
 
 deploy_config() {
+    if [ "$MODE" = anytls ]; then configure_anytls_bbr; fi
     NATIVE_CONFIG_DIR=$STAGE /bin/sh "$MANAGED_DIR/scripts/install-native.sh" "$MODE" || die '安装失败；上方错误及服务日志可用于定位'
     install -d -m 700 "$MANAGED_DIR/native/$MODE"
     install -m 600 "$STAGE/server.env" "$MANAGED_DIR/native/$MODE/server.env"
@@ -914,6 +1021,7 @@ deploy_config() {
         say "SNI：$DOMAIN；密码使用 SSPanel 用户的 $CREDENTIAL_FIELD。"
     elif [ "$MODE" = anytls ]; then
         say "客户端：AnyTLS / TLS；SNI：$DOMAIN；密码使用 SSPanel 用户 UUID；证书校验开启。"
+        say "BBR 配置：$BBR_ENABLED；系统 TCP 算法：$(sysctl -n net.ipv4.tcp_congestion_control)。"
         say '面板节点类型选择 AnyTLS（sort=16），地址填写源站域名，自定义配置：'
         printf '{"protocol":"anytls","offset_port_user":"%s","offset_port_node":"%s","sni":"%s","allow_insecure":false,"udp":true}\n' "$PUBLIC_PORT" "$LOCAL_PORT" "$DOMAIN"
         say "链接模板（替换 USER_UUID）：anytls://USER_UUID@$DOMAIN:$PUBLIC_PORT?sni=$DOMAIN&insecure=0#AnyTLS"
@@ -1040,6 +1148,7 @@ uninstall_all() {
         remove_service "$ADAPTER_SERVICE"
         remove_service "$PROXY_SERVICE"
     done
+    remove_anytls_bbr
     if [ "$(init_system)" = systemd ]; then systemctl daemon-reload; fi
     rm -f -- /usr/local/bin/sspanel-hy2-adapter /usr/local/bin/hysteria /usr/local/bin/xray
     rm -rf -- /etc/sspanel-native /var/lib/sspanel-native /var/log/sspanel-native "$MANAGED_DIR"

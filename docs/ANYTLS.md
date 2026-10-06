@@ -15,6 +15,32 @@ sudo env NATIVE_LOCAL_ASSETS_DIR="$PWD" sh scripts/native-manager.sh
 
 管理器会核验 SHA-256，并拒绝不支持 AnyTLS 的旧 Adapter，避免只更新菜单却无法启动。
 
+## BBR 开关
+
+安装或选择 `4 修改配置并重启 → 3 AnyTLS` 时，证书配置后会询问是否开启 BBR：
+
+```text
+1) 开启 BBR（检查内核支持并设置开机生效）
+2) 关闭 BBR（恢复原非 BBR 算法，无法恢复时使用 cubic）
+是否开启 BBR [2]：
+```
+
+首次默认保持当前系统状态，之后回车保留已保存的选择。
+设置保存为 `/opt/sspanel-native/settings/anytls.conf` 中的 `BBR_ENABLED=true/false`。
+开启前检查内核是否支持 BBR，必要时加载已有 `tcp_bbr` 模块；不支持则在安装或
+重启服务之前报错，可重新运行选择关闭。不安装或更换内核。
+
+BBR 修改的是**整台 VPS 的 TCP 拥塞控制**，同机其他 TCP 服务的新连接也会受影响；
+不修改队列规则、HY2 UDP 参数或面板订阅。配置通过
+`/etc/sysctl.d/zz-sspanel-native-anytls-bbr.conf` 和
+`/etc/modules-load.d/sspanel-native-anytls-bbr.conf` 开机生效。
+关闭会恢复首次管理前的非 BBR 算法；原算法是 BBR 或已不可用时使用 `cubic`，
+并保留关闭状态的开机配置，以覆盖原有工具的 BBR 设置。
+卸载只清理本脚本管理的 BBR 文件，并恢复首次管理前的系统算法；如果管理员
+已另行修改当前算法，则保留管理员的更改。
+
+BBR 可能改善高延迟或重传线路的吞吐量，不保证修复线路拥堵、限速或 IP 封锁。
+
 ## TLS 与端口
 
 域名 A/AAAA 指向源站，Cloudflare DNS 使用灰云。普通橙云只转发 HTTP，不能直接

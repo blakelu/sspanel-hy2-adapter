@@ -265,6 +265,7 @@ EOF
 TLS_CERT_MODE=manual
 TLS_CERT_FILE=$test_root/cert.pem
 TLS_KEY_FILE=$test_root/key.pem
+BBR_ENABLED=true
 write_config
 grep -q '^anytls:' "$STAGE/adapter.yaml"
 grep -q 'listen: "0.0.0.0:8443"' "$STAGE/adapter.yaml"
@@ -273,6 +274,7 @@ grep -q 'listen: 127.0.0.1:18082' "$STAGE/adapter.yaml"
 write_settings
 [ "$(setting anytls TLS_CERT_MODE)" = manual ]
 [ "$(setting anytls DOMAIN)" = ws.example.net ]
+[ "$(setting anytls BBR_ENABLED)" = true ]
 rm -rf -- "$STAGE"
 STAGE=
 TLS_CERT_MODE=acme
