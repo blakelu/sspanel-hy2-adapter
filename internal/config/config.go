@@ -31,6 +31,7 @@ type Config struct {
 	UserSource UserSourceConfig `yaml:"user_source"`
 	HY2        HY2Config        `yaml:"hy2"`
 	Xray       XrayConfig       `yaml:"xray"`
+	AnyTLS     AnyTLSConfig     `yaml:"anytls"`
 	Log        LogConfig        `yaml:"log"`
 }
 
@@ -96,6 +97,20 @@ type LogConfig struct {
 	Level string `yaml:"level"`
 }
 
+type AnyTLSConfig struct {
+	Enabled          bool     `yaml:"enabled"`
+	Listen           string   `yaml:"listen"`
+	ServerName       string   `yaml:"server_name"`
+	CertificateFile  string   `yaml:"certificate_file"`
+	KeyFile          string   `yaml:"key_file"`
+	SyncInterval     Duration `yaml:"sync_interval"`
+	PollInterval     Duration `yaml:"poll_interval"`
+	HandshakeTimeout Duration `yaml:"handshake_timeout"`
+	DialTimeout      Duration `yaml:"dial_timeout"`
+	UDPTimeout       Duration `yaml:"udp_timeout"`
+	StateFile        string   `yaml:"state_file"`
+}
+
 func Default() Config {
 	return Config{
 		Server: ServerConfig{
@@ -139,6 +154,12 @@ func Default() Config {
 			StateFile:    "./data/xray-traffic-state.json",
 			RunOnStartup: true,
 		},
+		AnyTLS: AnyTLSConfig{
+			Listen: "0.0.0.0:443", SyncInterval: Duration(30 * time.Second),
+			PollInterval: Duration(60 * time.Second), HandshakeTimeout: Duration(10 * time.Second),
+			DialTimeout: Duration(10 * time.Second), UDPTimeout: Duration(2 * time.Minute),
+			StateFile: "./data/anytls-traffic-state.json",
+		},
 		Log: LogConfig{Level: "info"},
 	}
 }
@@ -166,6 +187,24 @@ func Load(path string) (Config, error) {
 
 func (c Config) Validate() error {
 	var errs []error
+	if c.AnyTLS.Enabled {
+		if c.HY2.Enabled || c.Xray.Enabled {
+			errs = append(errs, errors.New("anytls requires hy2.enabled and xray.enabled to be false"))
+		}
+		if _, _, err := net.SplitHostPort(c.AnyTLS.Listen); err != nil {
+			errs = append(errs, errors.New("anytls.listen must be a host:port address"))
+		}
+		if c.AnyTLS.CertificateFile == "" || c.AnyTLS.KeyFile == "" || c.AnyTLS.StateFile == "" {
+			errs = append(errs, errors.New("anytls certificate_file, key_file and state_file are required"))
+		}
+		if c.AnyTLS.SyncInterval.Value() <= 0 || c.AnyTLS.PollInterval.Value() <= 0 ||
+			c.AnyTLS.HandshakeTimeout.Value() <= 0 || c.AnyTLS.DialTimeout.Value() <= 0 || c.AnyTLS.UDPTimeout.Value() <= 0 {
+			errs = append(errs, errors.New("anytls intervals and timeouts must be positive"))
+		}
+		if len(c.UserSource.CredentialFields) != 1 || c.UserSource.CredentialFields[0] != "uuid" {
+			errs = append(errs, errors.New("anytls requires user_source.credential_fields: [uuid]"))
+		}
+	}
 	if c.Server.Listen == "" {
 		errs = append(errs, errors.New("server.listen is required"))
 	}
@@ -227,8 +266,8 @@ func (c Config) Validate() error {
 	default:
 		errs = append(errs, fmt.Errorf("user_source.mode must be api or database, got %q", c.UserSource.Mode))
 	}
-	if !c.HY2.Enabled && !c.Xray.Enabled {
-		errs = append(errs, errors.New("at least one of hy2.enabled or xray.enabled must be true"))
+	if !c.HY2.Enabled && !c.Xray.Enabled && !c.AnyTLS.Enabled {
+		errs = append(errs, errors.New("at least one of hy2.enabled, xray.enabled or anytls.enabled must be true"))
 	}
 	if c.HY2.Enabled {
 		if err := validateHTTPURL("hy2.stats_url", c.HY2.StatsURL); err != nil {

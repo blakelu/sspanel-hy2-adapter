@@ -145,17 +145,20 @@ mode_names() {
     case "$1" in
         hy2) PROXY=hysteria; ADMIN_PORT=18080; PROTOCOL=UDP ;;
         vless) PROXY=xray; ADMIN_PORT=18081; PROTOCOL=TCP ;;
+        anytls) PROXY=sspanel-hy2-adapter; ADMIN_PORT=18082; PROTOCOL=TCP ;;
         *) die '未知协议' ;;
     esac
     PROXY_SERVICE=sspanel-native-$1-$PROXY
     ADAPTER_SERVICE=sspanel-native-$1-adapter
+    [ "$1" != anytls ] || PROXY_SERVICE=$ADAPTER_SERVICE
 }
 choose_mode() {
     say '1) HY2' >&2
     say '2) VLESS（REALITY / WebSocket + TLS）' >&2
+    say '3) AnyTLS（TLS 直连 / SSPanel 多用户）' >&2
     say '0) 返回' >&2
     choice=$(ask '选择协议' '' no)
-    case "$choice" in 1) printf 'hy2\n' ;; 2) printf 'vless\n' ;; 0) printf '\n' ;; *) say '无效选择。' >&2; printf '\n' ;; esac
+    case "$choice" in 1) printf 'hy2\n' ;; 2) printf 'vless\n' ;; 3) printf 'anytls\n' ;; 0) printf '\n' ;; *) say '无效选择。' >&2; printf '\n' ;; esac
 }
 installed() { [ -f "/etc/sspanel-native/$1/server.env" ]; }
 
@@ -188,6 +191,10 @@ download() {
     download_path=$1
     download_dest=$2
     mkdir -p "$(dirname "$download_dest")"
+    if [ -n "${NATIVE_LOCAL_ASSETS_DIR:-}" ]; then
+        cp "$NATIVE_LOCAL_ASSETS_DIR/$download_path" "$download_dest" || die "本地文件不存在：$download_path"
+        return
+    fi
     if command -v curl >/dev/null 2>&1; then
         curl -fLsS --retry 3 --connect-timeout 10 --max-time 180 \
             "$RAW_BASE/$download_path" -o "$download_dest" || die "下载失败：$download_path"
@@ -208,8 +215,10 @@ fetch_assets() {
     [ "$(uname -s)" = Linux ] || die '只支持 Linux'
     STAGE=$(mktemp -d)
     download bin/SHA256SUMS "$STAGE/bin/SHA256SUMS"
-    case "$fetch_mode" in hy2) fetch_proxy=hysteria ;; vless) fetch_proxy=xray ;; esac
-    for fetch_path in scripts/install-native.sh bin/sspanel-hy2-adapter-linux "bin/$fetch_proxy-linux"; do
+    case "$fetch_mode" in hy2) fetch_proxy=hysteria ;; vless) fetch_proxy=xray ;; anytls) fetch_proxy=sspanel-hy2-adapter ;; esac
+    fetch_files='scripts/install-native.sh bin/sspanel-hy2-adapter-linux bin/anytls-LICENSE bin/anytls-SOURCE.txt'
+    if [ "$fetch_mode" != anytls ]; then fetch_files="$fetch_files bin/$fetch_proxy-linux"; fi
+    for fetch_path in $fetch_files; do
         download "$fetch_path" "$STAGE/$fetch_path"
         verify_download "$fetch_path" "$STAGE/$fetch_path"
     done
@@ -217,13 +226,18 @@ fetch_assets() {
     install -m 600 "$STAGE/bin/SHA256SUMS" "$MANAGED_DIR/bin/SHA256SUMS"
     install -m 755 "$STAGE/scripts/install-native.sh" "$MANAGED_DIR/scripts/install-native.sh"
     install -m 755 "$STAGE/bin/sspanel-hy2-adapter-linux" "$MANAGED_DIR/bin/sspanel-hy2-adapter-linux"
-    install -m 755 "$STAGE/bin/$fetch_proxy-linux" "$MANAGED_DIR/bin/$fetch_proxy-linux"
+    install -m 644 "$STAGE/bin/anytls-LICENSE" "$STAGE/bin/anytls-SOURCE.txt" "$MANAGED_DIR/bin/"
+    if [ "$fetch_mode" != anytls ]; then install -m 755 "$STAGE/bin/$fetch_proxy-linux" "$MANAGED_DIR/bin/$fetch_proxy-linux"; fi
     if [ "$fetch_mode" = hy2 ]; then
         "$MANAGED_DIR/bin/hysteria-linux" version >/dev/null || die 'Hysteria 无法在本机执行'
-    else
+    elif [ "$fetch_mode" = vless ]; then
         "$MANAGED_DIR/bin/xray-linux" version >/dev/null || die 'Xray 无法在本机执行'
     fi
     "$MANAGED_DIR/bin/sspanel-hy2-adapter-linux" -version >/dev/null || die 'Adapter 无法在本机执行'
+    if [ "$fetch_mode" = anytls ]; then
+        "$MANAGED_DIR/bin/sspanel-hy2-adapter-linux" -capabilities 2>/dev/null | grep -qw anytls ||
+            die '下载源的 Adapter 尚未支持 AnyTLS；请发布新版二进制，或设置 NATIVE_LOCAL_ASSETS_DIR 使用本地新版文件'
+    fi
     rm -rf -- "$STAGE"
     STAGE=
 }
@@ -232,6 +246,9 @@ ensure_assets() {
     if ! command -v curl >/dev/null 2>&1 || \
        { [ "$1" = vless ] && ! command -v jq >/dev/null 2>&1; }; then
         ensure_dependencies "$1"
+    fi
+    if [ "$1" = anytls ] && ! "$MANAGED_DIR/bin/sspanel-hy2-adapter-linux" -capabilities 2>/dev/null | grep -qw anytls; then
+        fetch_assets anytls
     fi
     if [ ! -x "$MANAGED_DIR/bin/sspanel-hy2-adapter-linux" ] || \
        [ ! -x "$MANAGED_DIR/bin/$PROXY-linux" ] || \
@@ -253,6 +270,7 @@ setting() {
     setting_env="/etc/sspanel-native/$setting_mode/server.env"
     setting_config="/etc/sspanel-native/$setting_mode/server.yaml"
     [ "$setting_mode" = vless ] && setting_config="/etc/sspanel-native/vless/server.json"
+    [ "$setting_mode" != anytls ] || setting_config="/etc/sspanel-native/anytls/adapter.yaml"
     case "$setting_key" in
         PANEL_URL|MU_KEY|NODE_ID|ADAPTER_TOKEN|STATS_SECRET)
             case "$setting_key" in
@@ -268,6 +286,8 @@ setting() {
             if [ -f "$setting_config" ]; then
                 if [ "$setting_mode" = hy2 ]; then
                     awk '/^listen:/ { sub(/^.*:/, ""); print; exit }' "$setting_config"
+                elif [ "$setting_mode" = anytls ]; then
+                    awk '/^anytls:/ { found=1; next } found && /^  listen:/ { sub(/^.*:/, ""); gsub(/"/, ""); print; exit }' "$setting_config"
                 else
                     jq -r '.inbounds[0].port // empty' "$setting_config"
                 fi
@@ -276,6 +296,8 @@ setting() {
             if [ -f "$setting_config" ]; then
                 if [ "$setting_mode" = hy2 ]; then
                     awk '/^  domains:/ { found=1; next } found && /^    - / { print $2; exit }' "$setting_config"
+                elif [ "$setting_mode" = anytls ]; then
+                    [ -f "$setting_env" ] && awk -F= '$1 == "ANYTLS_DOMAIN" { print $2; exit }' "$setting_env"
                 else
                     jq -r '.inbounds[0].streamSettings.tlsSettings.serverName // empty' "$setting_config"
                 fi
@@ -285,8 +307,17 @@ setting() {
                 jq -r 'if .inbounds[0].streamSettings.network == "ws" then "ws-tls" else "reality" end' "$setting_config"
             fi ;;
         WS_PATH) [ -f "$setting_config" ] && jq -r '.inbounds[0].streamSettings.wsSettings.path // empty' "$setting_config" ;;
-        TLS_CERT_FILE) [ -f "$setting_config" ] && jq -r '.inbounds[0].streamSettings.tlsSettings.certificates[0].certificateFile // empty' "$setting_config" ;;
-        TLS_KEY_FILE) [ -f "$setting_config" ] && jq -r '.inbounds[0].streamSettings.tlsSettings.certificates[0].keyFile // empty' "$setting_config" ;;
+        TLS_CERT_FILE|TLS_KEY_FILE)
+            if [ -f "$setting_config" ]; then
+                if [ "$setting_mode" = anytls ]; then
+                    case "$setting_key" in TLS_CERT_FILE) setting_tls_name=certificate_file ;; TLS_KEY_FILE) setting_tls_name=key_file ;; esac
+                    awk -v key="$setting_tls_name" '/^anytls:/ { found=1; next } found && $1 == key ":" { sub(/^[^:]*:[[:space:]]*/, ""); gsub(/"/, ""); print; exit }' "$setting_config"
+                elif [ "$setting_key" = TLS_CERT_FILE ]; then
+                    jq -r '.inbounds[0].streamSettings.tlsSettings.certificates[0].certificateFile // empty' "$setting_config"
+                else
+                    jq -r '.inbounds[0].streamSettings.tlsSettings.certificates[0].keyFile // empty' "$setting_config"
+                fi
+            fi ;;
         EMAIL) [ -f "$setting_config" ] && awk '/^  email:/ { print $2; exit }' "$setting_config" ;;
         CF_TOKEN) [ -f "$setting_config" ] && awk '/^      cloudflare_api_token:/ { print $2; exit }' "$setting_config" ;;
         CREDENTIAL_FIELD)
@@ -312,9 +343,9 @@ write_settings() {
         if [ "$MODE" = hy2 ]; then
             printf 'DOMAIN=%s\nEMAIL=%s\nCF_TOKEN=%s\nSTATS_SECRET=%s\nCREDENTIAL_FIELD=%s\n' \
                 "$DOMAIN" "$EMAIL" "$CF_TOKEN" "$STATS_SECRET" "$CREDENTIAL_FIELD"
-        elif [ "$VLESS_TRANSPORT" = ws-tls ]; then
-            printf 'VLESS_TRANSPORT=ws-tls\nDOMAIN=%s\nWS_PATH=%s\nTLS_CERT_FILE=%s\nTLS_KEY_FILE=%s\n' \
-                "$DOMAIN" "$WS_PATH" "$TLS_CERT_FILE" "$TLS_KEY_FILE"
+        elif [ "$MODE" = anytls ] || [ "$VLESS_TRANSPORT" = ws-tls ]; then
+            if [ "$MODE" = vless ]; then printf 'VLESS_TRANSPORT=ws-tls\nWS_PATH=%s\n' "$WS_PATH"; fi
+            printf 'DOMAIN=%s\nTLS_CERT_FILE=%s\nTLS_KEY_FILE=%s\n' "$DOMAIN" "$TLS_CERT_FILE" "$TLS_KEY_FILE"
             printf 'TLS_CERT_MODE=%s\n' "$TLS_CERT_MODE"
             if [ "$TLS_CERT_MODE" = acme ]; then
                 printf 'EMAIL=%s\nCF_TOKEN=%s\nCF_ZONE_ID=%s\n' "$EMAIL" "$CF_TOKEN" "$CF_ZONE_ID"
@@ -414,10 +445,36 @@ prompt_vless_ws() {
         fetch_assets vless
     fi
 }
+prompt_anytls() {
+    DOMAIN=$(required 'AnyTLS 证书域名 / 客户端 SNI（DNS 使用灰云直连）' "$(setting anytls DOMAIN)" no)
+    dns_name "$DOMAIN" || die '域名格式不正确'
+    DOMAIN=$(printf '%s' "$DOMAIN" | tr '[:upper:]' '[:lower:]')
+    say 'AnyTLS 使用原生 TLS/TCP，域名应指向源站并关闭普通 Cloudflare 橙云；用户密码为 SSPanel UUID。' >&2
+    choose_vless_cert_mode
+    if [ "$TLS_CERT_MODE" = acme ]; then
+        EMAIL=$(required 'ACME 联系邮箱' "$(setting anytls EMAIL)" no)
+        safe_scalar "$EMAIL" || die '邮箱含有不支持的字符'
+        case "$EMAIL" in *@*.*) ;; *) die '邮箱格式不正确' ;; esac
+        CF_TOKEN=$(required 'Cloudflare DNS API Token（输入时隐藏）' "$(setting anytls CF_TOKEN)" yes)
+        safe_token "$CF_TOKEN" || die 'Cloudflare Token 格式不正确'
+        CF_ZONE_ID=$(required 'Cloudflare Zone ID（域名概览页）' "$(setting anytls CF_ZONE_ID)" no)
+        printf '%s\n' "$CF_ZONE_ID" | grep -Eq '^[0-9a-fA-F]{32}$' || die 'Zone ID 必须是 32 位十六进制字符'
+        prepare_vless_acme
+    else
+        say '请使用客户端信任、覆盖该域名的完整 PEM 证书链（例如 Let’s Encrypt）；Cloudflare Origin CA 不适用于直连客户端。' >&2
+        TLS_CERT_FILE=$(required 'TLS 证书绝对路径' "$(setting anytls TLS_CERT_FILE)" no)
+        TLS_KEY_FILE=$(required 'TLS 私钥绝对路径' "$(setting anytls TLS_KEY_FILE)" no)
+    fi
+    for tls_file in "$TLS_CERT_FILE" "$TLS_KEY_FILE"; do
+        case "$tls_file" in /*) ;; *) die '证书和私钥必须使用绝对路径' ;; esac
+        safe_scalar "$tls_file" || die '证书路径含有不支持的字符'
+        [ -r "$tls_file" ] && [ -s "$tls_file" ] || die "证书文件不存在、不可读或为空：$tls_file"
+    done
+}
 choose_vless_cert_mode() {
-    cert_current=$(setting vless TLS_CERT_MODE)
+    cert_current=$(setting "${MODE:-vless}" TLS_CERT_MODE)
     if [ -z "$cert_current" ]; then
-        if [ -n "$(setting vless TLS_CERT_FILE)" ]; then cert_current=manual; else cert_current=acme; fi
+        if [ -n "$(setting "${MODE:-vless}" TLS_CERT_FILE)" ]; then cert_current=manual; else cert_current=acme; fi
     fi
     case "$cert_current" in acme) cert_default=1 ;; manual) cert_default=2 ;; *) die '未知证书管理方式' ;; esac
     say "1) 自动申请并续期（Let's Encrypt / Cloudflare DNS API）" >&2
@@ -436,12 +493,12 @@ acme_paths() {
     printf '%s\n' "$MANAGED_DIR" | grep -Eq '^/[A-Za-z0-9._/-]+$' || die '自动证书模式要求管理目录为不含空格或特殊字符的绝对路径'
     dns_name "$DOMAIN" || die '证书域名格式不正确'
     ACME_CLIENT="$MANAGED_DIR/acme-client"
-    ACME_STATE="$MANAGED_DIR/acme-vless/$DOMAIN"
+    ACME_STATE="$MANAGED_DIR/acme-${MODE:-vless}/$DOMAIN"
     TLS_CERT_FILE="$ACME_STATE/tls/fullchain.pem"
     TLS_KEY_FILE="$ACME_STATE/tls/key.pem"
 }
 acquire_acme_lock() {
-    install -d -m 700 "$MANAGED_DIR/acme-vless"
+    install -d -m 700 "$MANAGED_DIR/acme-${MODE:-vless}"
     mkdir "$CERT_LOCK_DIR" 2>/dev/null || die "另一项证书操作正在运行；如进程已退出，请检查并移除 $CERT_LOCK_DIR 后重试"
     ACME_LOCK=$CERT_LOCK_DIR
 }
@@ -498,12 +555,15 @@ prepare_vless_acme() {
     # Exit 2 means an existing certificate is not due for renewal. Reinstall it.
     install_vless_acme_cert
 }
-renew_vless_cert() {
-    [ "$(setting vless VLESS_TRANSPORT)" = ws-tls ] || return 0
-    [ "$(setting vless TLS_CERT_MODE)" = acme ] || return 0
-    DOMAIN=$(setting vless DOMAIN)
-    CF_TOKEN=$(setting vless CF_TOKEN)
-    CF_ZONE_ID=$(setting vless CF_ZONE_ID)
+renew_vless_cert() { renew_tls_cert vless; }
+renew_anytls_cert() { renew_tls_cert anytls; }
+renew_tls_cert() {
+    MODE=$1
+    if [ "$MODE" = vless ]; then [ "$(setting vless VLESS_TRANSPORT)" = ws-tls ] || return 0; fi
+    [ "$(setting "$MODE" TLS_CERT_MODE)" = acme ] || return 0
+    DOMAIN=$(setting "$MODE" DOMAIN)
+    CF_TOKEN=$(setting "$MODE" CF_TOKEN)
+    CF_ZONE_ID=$(setting "$MODE" CF_ZONE_ID)
     [ -n "$CF_TOKEN" ] && [ -n "$CF_ZONE_ID" ] || die '缺少已保存的 Cloudflare Token 或 Zone ID'
     acme_paths
     acquire_acme_lock
@@ -514,38 +574,43 @@ renew_vless_cert() {
     install_vless_acme_cert
     release_acme_lock
 }
-disable_vless_cert_renewal() {
+disable_vless_cert_renewal() { disable_tls_cert_renewal vless; }
+disable_tls_cert_renewal() {
+    cert_job=sspanel-native-$1-cert
     if [ "$(init_system)" = systemd ]; then
-        if [ -f "$CERT_SYSTEMD_DIR/sspanel-native-vless-cert.timer" ]; then
-            systemctl disable --now sspanel-native-vless-cert.timer
-            systemctl stop sspanel-native-vless-cert.service
-            rm -f -- "$CERT_SYSTEMD_DIR/sspanel-native-vless-cert.timer" "$CERT_SYSTEMD_DIR/sspanel-native-vless-cert.service"
+        if [ -f "$CERT_SYSTEMD_DIR/$cert_job.timer" ]; then
+            systemctl disable --now "$cert_job.timer"
+            systemctl stop "$cert_job.service"
+            rm -f -- "$CERT_SYSTEMD_DIR/$cert_job.timer" "$CERT_SYSTEMD_DIR/$cert_job.service"
             systemctl daemon-reload
         fi
     fi
-    rm -f -- "$CERT_PERIODIC_DIR/sspanel-native-vless-cert"
+    rm -f -- "$CERT_PERIODIC_DIR/$cert_job"
 }
-configure_vless_cert_renewal() {
-    if [ "$VLESS_TRANSPORT" != ws-tls ] || [ "$TLS_CERT_MODE" != acme ]; then
-        disable_vless_cert_renewal
+configure_vless_cert_renewal() { configure_tls_cert_renewal vless; }
+configure_tls_cert_renewal() {
+    cert_job_mode=$1
+    cert_job=sspanel-native-$cert_job_mode-cert
+    if { [ "$cert_job_mode" = vless ] && [ "$VLESS_TRANSPORT" != ws-tls ]; } || [ "$TLS_CERT_MODE" != acme ]; then
+        disable_tls_cert_renewal "$cert_job_mode"
         return
     fi
     if [ "$(init_system)" = systemd ]; then
-        cat > "$CERT_SYSTEMD_DIR/sspanel-native-vless-cert.service" <<EOF
+        cat > "$CERT_SYSTEMD_DIR/$cert_job.service" <<EOF
 [Unit]
-Description=Renew SSPanel VLESS TLS certificate with Cloudflare DNS
+Description=Renew SSPanel $cert_job_mode TLS certificate with Cloudflare DNS
 Wants=network-online.target
 After=network-online.target
 
 [Service]
 Type=oneshot
 Environment=NATIVE_MANAGED_DIR=$MANAGED_DIR
-ExecStart=$MANAGER_BIN --renew-vless-cert
+ExecStart=$MANAGER_BIN --renew-$cert_job_mode-cert
 UMask=0077
 EOF
-        cat > "$CERT_SYSTEMD_DIR/sspanel-native-vless-cert.timer" <<'EOF'
+        cat > "$CERT_SYSTEMD_DIR/$cert_job.timer" <<EOF
 [Unit]
-Description=Daily SSPanel VLESS TLS certificate renewal check
+Description=Daily SSPanel $cert_job_mode TLS certificate renewal check
 
 [Timer]
 OnCalendar=daily
@@ -555,19 +620,21 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
-        chmod 644 "$CERT_SYSTEMD_DIR/sspanel-native-vless-cert.service" "$CERT_SYSTEMD_DIR/sspanel-native-vless-cert.timer"
+        chmod 644 "$CERT_SYSTEMD_DIR/$cert_job.service" "$CERT_SYSTEMD_DIR/$cert_job.timer"
         systemctl daemon-reload
-        systemctl enable --now sspanel-native-vless-cert.timer
+        systemctl enable --now "$cert_job.timer"
     else
         ensure_openrc_cert_cron
         install -d -m 755 "$CERT_PERIODIC_DIR"
         install -d -m 700 "$(dirname "$CERT_RENEW_LOG")"
-        cat > "$CERT_PERIODIC_DIR/sspanel-native-vless-cert" <<EOF
+        cert_job_log=$CERT_RENEW_LOG
+        if [ "$CERT_RENEW_LOG" = /var/log/sspanel-native/vless-cert-renew.log ]; then cert_job_log=/var/log/sspanel-native/$cert_job_mode-cert-renew.log; fi
+        cat > "$CERT_PERIODIC_DIR/$cert_job" <<EOF
 #!/bin/sh
 umask 077
-NATIVE_MANAGED_DIR="$MANAGED_DIR" "$MANAGER_BIN" --renew-vless-cert >> "$CERT_RENEW_LOG" 2>&1
+NATIVE_MANAGED_DIR="$MANAGED_DIR" "$MANAGER_BIN" --renew-$cert_job_mode-cert >> "$cert_job_log" 2>&1
 EOF
-        chmod 700 "$CERT_PERIODIC_DIR/sspanel-native-vless-cert"
+        chmod 700 "$CERT_PERIODIC_DIR/$cert_job"
         rc-update add crond default
         service_active crond || service_start crond
     fi
@@ -672,6 +739,46 @@ masquerade:
     url: https://www.bing.com/
     rewriteHost: true
 EOF
+    elif [ "$MODE" = anytls ]; then
+        printf 'ANYTLS_DOMAIN=%s\n' "$DOMAIN" >> "$STAGE/server.env"
+        cat > "$STAGE/adapter.yaml" <<EOF
+server:
+  listen: 127.0.0.1:18082
+  auth_token: "\${ADAPTER_AUTH_TOKEN}"
+  write_timeout: 15s
+panel:
+  base_url: "\${SSPANEL_BASE_URL}"
+  key: "\${SSPANEL_MU_KEY}"
+  node_id: \${SSPANEL_NODE_ID}
+  timeout: 5s
+user_source:
+  mode: api
+  credential_fields: [uuid]
+  api:
+    refresh_interval: 30s
+    max_stale: 5m
+hy2:
+  enabled: false
+xray:
+  enabled: false
+anytls:
+  enabled: true
+  listen: "0.0.0.0:$LOCAL_PORT"
+  server_name: "$DOMAIN"
+  certificate_file: "$TLS_CERT_FILE"
+  key_file: "$TLS_KEY_FILE"
+  sync_interval: 30s
+  poll_interval: 60s
+  handshake_timeout: 10s
+  dial_timeout: 10s
+  udp_timeout: 2m
+  state_file: ./anytls-traffic-state.json
+log:
+  level: warn
+EOF
+        ADAPTER_AUTH_TOKEN=$ADAPTER_TOKEN SSPANEL_BASE_URL=$PANEL_URL SSPANEL_MU_KEY=$MU_KEY SSPANEL_NODE_ID=$NODE_ID \
+            "$MANAGED_DIR/bin/sspanel-hy2-adapter-linux" -check-config -config "$STAGE/adapter.yaml" >/dev/null ||
+            die 'AnyTLS 配置校验失败；请确认新版 Adapter、证书和私钥匹配'
     else
         cat > "$STAGE/adapter.yaml" <<'EOF'
 server:
@@ -771,14 +878,17 @@ deploy_config() {
     install -d -m 700 "$MANAGED_DIR/native/$MODE"
     install -m 600 "$STAGE/server.env" "$MANAGED_DIR/native/$MODE/server.env"
     install -m 600 "$STAGE/adapter.yaml" "$MANAGED_DIR/native/$MODE/adapter.yaml"
-    if [ "$MODE" = hy2 ]; then config_name=server.yaml; else config_name=server.json; fi
-    install -m 600 "$STAGE/$config_name" "$MANAGED_DIR/native/$MODE/$config_name"
+    if [ "$MODE" != anytls ]; then
+        if [ "$MODE" = hy2 ]; then config_name=server.yaml; else config_name=server.json; fi
+        install -m 600 "$STAGE/$config_name" "$MANAGED_DIR/native/$MODE/$config_name"
+    fi
     write_settings
     install -d -m 755 "$(dirname "$MANAGER_BIN")"
     if [ "$0" != "$MANAGER_BIN" ]; then install -m 755 "$0" "$MANAGER_BIN"; fi
     # Release the issuance lock before Persistent timers can start renewal.
     release_acme_lock
     if [ "$MODE" = vless ]; then configure_vless_cert_renewal; fi
+    if [ "$MODE" = anytls ]; then configure_tls_cert_renewal anytls; fi
     rm -rf -- "$STAGE"
     STAGE=
     wait_listener "$LOCAL_PORT"
@@ -802,6 +912,11 @@ deploy_config() {
     fi
     if [ "$MODE" = hy2 ]; then
         say "SNI：$DOMAIN；密码使用 SSPanel 用户的 $CREDENTIAL_FIELD。"
+    elif [ "$MODE" = anytls ]; then
+        say "客户端：AnyTLS / TLS；SNI：$DOMAIN；密码使用 SSPanel 用户 UUID；证书校验开启。"
+        say '面板节点类型选择 AnyTLS（sort=16），地址填写源站域名，自定义配置：'
+        printf '{"protocol":"anytls","offset_port_user":"%s","offset_port_node":"%s","sni":"%s","allow_insecure":false,"udp":true}\n' "$PUBLIC_PORT" "$LOCAL_PORT" "$DOMAIN"
+        say "链接模板（替换 USER_UUID）：anytls://USER_UUID@$DOMAIN:$PUBLIC_PORT?sni=$DOMAIN&insecure=0#AnyTLS"
     elif [ "$VLESS_TRANSPORT" = reality ]; then
         say "REALITY SNI：$SNI；Public Key：$REALITY_PUBLIC；Short ID：$SHORT_ID。"
         say '客户端 UUID 为 SSPanel 用户 UUID，flow 为 xtls-rprx-vision。'
@@ -816,6 +931,8 @@ configure_mode() {
     prompt_common
     if [ "$MODE" = hy2 ]; then
         prompt_hy2
+    elif [ "$MODE" = anytls ]; then
+        prompt_anytls
     elif [ "$VLESS_TRANSPORT" = ws-tls ]; then
         prompt_vless_ws
     else
@@ -893,7 +1010,7 @@ restart_mode() {
     collect_or_confirm "$MODE"
     if service_active "$ADAPTER_SERVICE"; then service_stop "$ADAPTER_SERVICE"; fi
     if service_active "$PROXY_SERVICE"; then service_stop "$PROXY_SERVICE"; fi
-    service_start "$PROXY_SERVICE"
+    if [ "$MODE" != anytls ]; then service_start "$PROXY_SERVICE"; fi
     service_start "$ADAPTER_SERVICE"
     wait_health
     wait_listener "$LOCAL_PORT"
@@ -910,14 +1027,15 @@ remove_service() {
     rm -f -- "/etc/init.d/$remove_name" "/etc/systemd/system/$remove_name.service"
 }
 uninstall_all() {
-    say '将删除 HY2/VLESS 服务、项目二进制、配置、证书、状态与日志；不会删除当前 Git 仓库和系统共享软件包。'
+    say '将删除 HY2/VLESS/AnyTLS 服务、项目二进制、配置、证书、状态与日志；不会删除当前 Git 仓库和系统共享软件包。'
     uninstall_answer=$(ask '确认输入 DELETE' '' no)
     [ "$uninstall_answer" = DELETE ] || die '卸载已取消'
-    for uninstall_mode in hy2 vless; do
+    for uninstall_mode in hy2 vless anytls; do
         if installed "$uninstall_mode"; then collect_or_confirm "$uninstall_mode"; fi
     done
     disable_vless_cert_renewal
-    for uninstall_mode in hy2 vless; do
+    disable_tls_cert_renewal anytls
+    for uninstall_mode in hy2 vless anytls; do
         mode_names "$uninstall_mode"
         remove_service "$ADAPTER_SERVICE"
         remove_service "$PROXY_SERVICE"
@@ -956,8 +1074,9 @@ menu_action() {
     esac
 }
 
-if [ "$#" -gt 1 ]; then die '用法：native-manager.sh [0|1|2|3|4|--renew-vless-cert]'; fi
+if [ "$#" -gt 1 ]; then die '用法：native-manager.sh [0|1|2|3|4|--renew-vless-cert|--renew-anytls-cert]'; fi
 if [ "$#" -eq 1 ] && [ "$1" = --renew-vless-cert ]; then renew_vless_cert; exit 0; fi
+if [ "$#" -eq 1 ] && [ "$1" = --renew-anytls-cert ]; then renew_anytls_cert; exit 0; fi
 if [ "$#" -eq 1 ]; then menu_action "$1"; exit 0; fi
 while :; do
     say ''

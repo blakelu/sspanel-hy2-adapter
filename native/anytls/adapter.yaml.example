@@ -1,0 +1,32 @@
+server:
+  listen: 127.0.0.1:18082
+  auth_token: "${ADAPTER_AUTH_TOKEN}"
+  write_timeout: 15s
+panel:
+  base_url: "${SSPANEL_BASE_URL}"
+  key: "${SSPANEL_MU_KEY}"
+  node_id: ${SSPANEL_NODE_ID}
+user_source:
+  mode: api
+  credential_fields: [uuid]
+  api:
+    refresh_interval: 30s
+    max_stale: 5m
+hy2:
+  enabled: false
+xray:
+  enabled: false
+anytls:
+  enabled: true
+  listen: 0.0.0.0:443
+  server_name: anytls.example.com
+  certificate_file: /absolute/path/fullchain.pem
+  key_file: /absolute/path/key.pem
+  sync_interval: 30s
+  poll_interval: 60s
+  handshake_timeout: 10s
+  dial_timeout: 10s
+  udp_timeout: 2m
+  state_file: ./anytls-traffic-state.json
+log:
+  level: warn

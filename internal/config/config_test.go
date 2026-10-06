@@ -46,6 +46,30 @@ panel:
 	}
 }
 
+func TestAnyTLSValidation(t *testing.T) {
+	cfg := Default()
+	cfg.Panel.BaseURL, cfg.Panel.Key, cfg.Panel.NodeID = "https://panel.example.com", "secret", 16
+	cfg.HY2.Enabled = false
+	cfg.AnyTLS.Enabled = true
+	cfg.AnyTLS.CertificateFile, cfg.AnyTLS.KeyFile = "/cert.pem", "/key.pem"
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range []func(*Config){
+		func(c *Config) { c.UserSource.CredentialFields = []string{"passwd"} },
+		func(c *Config) { c.AnyTLS.Listen = "invalid" },
+		func(c *Config) { c.AnyTLS.KeyFile = "" },
+		func(c *Config) { c.AnyTLS.SyncInterval = 0 },
+		func(c *Config) { c.Xray.Enabled = true },
+	} {
+		bad := cfg
+		change(&bad)
+		if err := bad.Validate(); err == nil {
+			t.Fatal("invalid AnyTLS configuration accepted")
+		}
+	}
+}
+
 func TestValidateRejectsUnsafeAPIStaleWindow(t *testing.T) {
 	cfg := Default()
 	cfg.Panel.BaseURL = "https://panel.example.com"

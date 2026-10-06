@@ -31,6 +31,7 @@ EOF
 #!/bin/sh
 if [ "$1" = -h ]; then printf '%s\n' '-check-config'; exit 0; fi
 [ "$1" = -check-config ] && [ "$2" = -config ]
+if grep -q '^anytls:' "$3"; then exit 0; fi
 grep -q 'flow: ""' "$3"
 EOF
     chmod +x "$MANAGED_DIR/bin/"*
@@ -253,4 +254,40 @@ grep -q 'add crond default' "$test_root/openrc.log"
 TLS_CERT_MODE=manual
 configure_vless_cert_renewal
 [ ! -f "$CERT_PERIODIC_DIR/sspanel-native-vless-cert" ]
-say 'native-manager tests passed'
+MODE=anytls
+unset VLESS_TRANSPORT
+mode_names "$MODE"
+[ "$ADMIN_PORT" = 18082 ] && [ "$PROXY_SERVICE" = "$ADAPTER_SERVICE" ]
+exec 3<<'EOF'
+3
+EOF
+[ "$(choose_mode)" = anytls ]
+TLS_CERT_MODE=manual
+TLS_CERT_FILE=$test_root/cert.pem
+TLS_KEY_FILE=$test_root/key.pem
+write_config
+grep -q '^anytls:' "$STAGE/adapter.yaml"
+grep -q 'listen: "0.0.0.0:8443"' "$STAGE/adapter.yaml"
+grep -q 'listen: 127.0.0.1:18082' "$STAGE/adapter.yaml"
+[ ! -f "$STAGE/server.json" ]
+write_settings
+[ "$(setting anytls TLS_CERT_MODE)" = manual ]
+[ "$(setting anytls DOMAIN)" = ws.example.net ]
+rm -rf -- "$STAGE"
+STAGE=
+TLS_CERT_MODE=acme
+prepare_vless_acme
+case "$ACME_STATE" in */acme-anytls/ws.example.net) ;; *) die 'AnyTLS reused VLESS certificate state' ;; esac
+write_settings
+release_acme_lock
+renew_anytls_cert
+init_system() { printf 'systemd\n'; }
+configure_tls_cert_renewal anytls
+grep -q -- '--renew-anytls-cert' "$CERT_SYSTEMD_DIR/sspanel-native-anytls-cert.service"
+# Disabling AnyTLS renewal must not remove VLESS jobs.
+touch "$CERT_SYSTEMD_DIR/sspanel-native-vless-cert.timer"
+TLS_CERT_MODE=manual
+configure_tls_cert_renewal anytls
+[ ! -f "$CERT_SYSTEMD_DIR/sspanel-native-anytls-cert.timer" ]
+[ -f "$CERT_SYSTEMD_DIR/sspanel-native-vless-cert.timer" ]
+say 'native-manager tests passed (VLESS + AnyTLS)'

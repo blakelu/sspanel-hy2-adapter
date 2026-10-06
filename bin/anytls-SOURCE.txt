@@ -1,0 +1,12 @@
+The adapter binary links these GPL-3.0-or-later libraries:
+
+github.com/sagernet/sing-anytls v0.0.0-20260928104022-580984e4d8cb
+Source: https://github.com/SagerNet/sing-anytls/tree/580984e4d8cb10f1c5e88d7ec14cfe4d955d66e6
+
+github.com/sagernet/sing v0.8.14
+Source: https://github.com/SagerNet/sing/tree/v0.8.14
+
+Full adapter source and build instructions: repository root, go.mod, go.sum, docs/ANYTLS.md.
+Fetch the pinned library source with: go mod download
+Third-party license text: bin/anytls-LICENSE
+Original adapter source retains the repository MIT notice; the combined binary is distributed under GPL-3.0-or-later.

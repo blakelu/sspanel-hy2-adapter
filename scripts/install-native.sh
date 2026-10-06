@@ -4,12 +4,13 @@ set -eu
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || die 'run as root (sudo/doas)'
-[ "$#" -eq 1 ] || die 'usage: install-native.sh hy2|vless'
+[ "$#" -eq 1 ] || die 'usage: install-native.sh hy2|vless|anytls'
 mode="$1"
 case "$mode" in
     hy2) proxy_name=hysteria; proxy_file=server.yaml; proxy_args='server -c'; admin_port=18080 ;;
     vless) proxy_name=xray; proxy_file=server.json; proxy_args='run -config'; admin_port=18081 ;;
-    *) die 'mode must be hy2 or vless' ;;
+    anytls) proxy_name=sspanel-hy2-adapter; proxy_file=adapter.yaml; proxy_args='-config'; admin_port=18082 ;;
+    *) die 'mode must be hy2, vless or anytls' ;;
 esac
 
 project_dir="$(cd "$(dirname "$0")/.." && pwd)"
@@ -21,6 +22,7 @@ state_dir="/var/lib/sspanel-native/${mode}"
 service_prefix="sspanel-native-${mode}"
 proxy_service="${service_prefix}-${proxy_name}"
 adapter_service="${service_prefix}-adapter"
+if [ "$mode" = anytls ]; then proxy_service=$adapter_service; fi
 
 if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
     init_system=systemd
@@ -57,10 +59,21 @@ if [ "$mode" = hy2 ]; then
         die 'HY2 server.yaml must configure tls or acme'
     grep -Eq '^[[:space:]]*auth:' "${source_dir}/server.yaml" ||
         die 'HY2 server.yaml must configure HTTP auth'
-else
+elif [ "$mode" = vless ]; then
     command -v jq >/dev/null 2>&1 || die 'jq is required to validate Xray JSON (apk add jq)'
     jq -e . "${source_dir}/server.json" >/dev/null || die 'invalid Xray JSON'
     "$proxy_bin" run -test -config "${source_dir}/server.json" >/dev/null || die 'Xray rejected server.json'
+else
+    "$adapter_bin" -capabilities 2>/dev/null | grep -qw anytls || die 'adapter does not support AnyTLS'
+    # EnvironmentFile values are data; never source/eval shell credentials.
+    while IFS= read -r install_line || [ -n "$install_line" ]; do
+        case "$install_line" in
+            ''|\#*) continue ;;
+            *=*) export "$install_line" ;;
+            *) die 'invalid EnvironmentFile line' ;;
+        esac
+    done < "${source_dir}/server.env"
+    "$adapter_bin" -check-config -config "${source_dir}/adapter.yaml" >/dev/null || die 'invalid AnyTLS configuration or certificate'
 fi
 
 # Preserve traffic accumulated since the last Adapter checkpoint.
@@ -82,13 +95,18 @@ fi
 install -d -m 700 "$config_dir" "$state_dir"
 install -m 755 "$adapter_bin" /usr/local/bin/sspanel-hy2-adapter.new
 mv -f /usr/local/bin/sspanel-hy2-adapter.new /usr/local/bin/sspanel-hy2-adapter
-install -m 755 "$proxy_bin" "/usr/local/bin/${proxy_name}.new"
-mv -f "/usr/local/bin/${proxy_name}.new" "/usr/local/bin/${proxy_name}"
+if [ "$mode" != anytls ]; then
+    install -m 755 "$proxy_bin" "/usr/local/bin/${proxy_name}.new"
+    mv -f "/usr/local/bin/${proxy_name}.new" "/usr/local/bin/${proxy_name}"
+fi
 install -m 600 "${source_dir}/server.env" "${config_dir}/server.env"
 install -m 600 "${source_dir}/adapter.yaml" "${config_dir}/adapter.yaml"
-install -m 600 "${source_dir}/${proxy_file}" "${config_dir}/${proxy_file}"
+if [ "$mode" != anytls ]; then install -m 600 "${source_dir}/${proxy_file}" "${config_dir}/${proxy_file}"; fi
+adapter_memlimit=32MiB
+if [ "$mode" = anytls ]; then adapter_memlimit=48MiB; fi
 
 if [ "$init_system" = systemd ]; then
+    if [ "$mode" != anytls ]; then
     cat >"/etc/systemd/system/${proxy_service}.service" <<EOF
 [Unit]
 Description=SSPanel native ${mode} ${proxy_name}
@@ -111,19 +129,27 @@ PrivateTmp=yes
 [Install]
 WantedBy=multi-user.target
 EOF
+    fi
+
+    adapter_after=network-online.target
+    adapter_wants=network-online.target
+    if [ "$mode" != anytls ]; then
+        adapter_after="$adapter_after ${proxy_service}.service"
+        adapter_wants="$adapter_wants ${proxy_service}.service"
+    fi
 
     cat >"/etc/systemd/system/${adapter_service}.service" <<EOF
 [Unit]
 Description=SSPanel native ${mode} adapter
-Wants=network-online.target ${proxy_service}.service
-After=network-online.target ${proxy_service}.service
+Wants=$adapter_wants
+After=$adapter_after
 
 [Service]
 Type=simple
 WorkingDirectory=${state_dir}
 EnvironmentFile=${config_dir}/server.env
 Environment=GOGC=50
-Environment=GOMEMLIMIT=32MiB
+Environment=GOMEMLIMIT=$adapter_memlimit
 ExecStart=/usr/local/bin/sspanel-hy2-adapter -config ${config_dir}/adapter.yaml
 Restart=on-failure
 RestartSec=3
@@ -136,15 +162,20 @@ PrivateTmp=yes
 WantedBy=multi-user.target
 EOF
 
-    chmod 644 "/etc/systemd/system/${proxy_service}.service" "/etc/systemd/system/${adapter_service}.service"
+    chmod 644 "/etc/systemd/system/${adapter_service}.service"
+    if [ "$mode" != anytls ]; then chmod 644 "/etc/systemd/system/${proxy_service}.service"; fi
     systemctl daemon-reload
-    systemctl enable "${proxy_service}.service" "${adapter_service}.service"
-    systemctl restart "${proxy_service}.service"
+    if [ "$mode" != anytls ]; then
+        systemctl enable "${proxy_service}.service"
+        systemctl restart "${proxy_service}.service"
+    fi
+    systemctl enable "${adapter_service}.service"
     systemctl restart "${adapter_service}.service"
     systemctl --no-pager --full status "${proxy_service}.service" "${adapter_service}.service"
 else
     log_dir=/var/log/sspanel-native
     install -d -m 700 "$log_dir"
+    if [ "$mode" != anytls ]; then
     cat >"/etc/init.d/${proxy_service}" <<EOF
 #!/sbin/openrc-run
 name="${proxy_service}"
@@ -162,6 +193,9 @@ export GOGC=50 GOMEMLIMIT=48MiB
 
 depend() { need net; after firewall; }
 EOF
+    fi
+    adapter_dependencies=net
+    if [ "$mode" != anytls ]; then adapter_dependencies="$adapter_dependencies $proxy_service"; fi
 
     cat >"/etc/init.d/${adapter_service}" <<EOF
 #!/sbin/openrc-run
@@ -176,7 +210,7 @@ respawn_delay=3
 respawn_max=0
 output_log="${log_dir}/${adapter_service}.log"
 error_log="${log_dir}/${adapter_service}.err.log"
-export GOGC=50 GOMEMLIMIT=32MiB
+export GOGC=50 GOMEMLIMIT=$adapter_memlimit
 
 while IFS= read -r line || [ -n "\$line" ]; do
     case "\$line" in
@@ -186,15 +220,18 @@ while IFS= read -r line || [ -n "\$line" ]; do
     esac
 done < "${config_dir}/server.env"
 
-depend() { need net ${proxy_service}; }
+depend() { need $adapter_dependencies; }
 EOF
 
-    chmod 755 "/etc/init.d/${proxy_service}" "/etc/init.d/${adapter_service}"
-    rc-update add "$proxy_service" default
+    chmod 755 "/etc/init.d/${adapter_service}"
+    if [ "$mode" != anytls ]; then
+        chmod 755 "/etc/init.d/${proxy_service}"
+        rc-update add "$proxy_service" default
+    fi
     rc-update add "$adapter_service" default
     if service_active "$adapter_service"; then rc-service "$adapter_service" stop; fi
     if service_active "$proxy_service"; then rc-service "$proxy_service" stop; fi
-    rc-service "$proxy_service" start
+    if [ "$mode" != anytls ]; then rc-service "$proxy_service" start; fi
     rc-service "$adapter_service" start
     rc-service "$proxy_service" status
     rc-service "$adapter_service" status

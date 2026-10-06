@@ -1,4 +1,8 @@
-# 128 MB NAT 小机器原生部署（HY2 / VLESS）
+# 128 MB NAT 小机器原生部署（HY2 / VLESS / AnyTLS）
+
+AnyTLS 使用独立节点类型及单个 Adapter/代理合并进程，选择 `1 安装 → 3 AnyTLS`。
+需要配套面板更新，配置、证书及订阅说明见 [ANYTLS.md](ANYTLS.md)。下面的双进程
+说明适用于 HY2/VLESS；AnyTLS 的软堆目标为 48 MiB。
 
 这套部署运行两个原生进程：本项目的 Adapter，以及 Hysteria 2 或 Xray。无需 Docker。安装脚本使用 `/bin/sh`，支持 **Ubuntu / Debian 的 systemd** 和 **Alpine 3.21 的 OpenRC**；需有 root 权限。128 MB 是机器内存，不是进程内存保证：能否稳定运行取决于系统本身、在线人数和代理负载。Ubuntu 的系统基础内存占用可能使 128 MB 机器无法稳定运行，应先用 `free -m` 检查可用内存。脚本将 Go GC 设为 `GOGC=50`，并把 Adapter / 代理的软堆目标设为 `32MiB` / `48MiB`；这不是进程 RSS 的硬上限。上线后观察两进程 RSS 和系统剩余内存，用户较多时需增加内存或调整目标。
 
@@ -51,7 +55,7 @@ Ubuntu 若已启用 UFW，还需放行**本机内部监听端口**，例如上�
 
 不使用交互管理器时，按下面步骤手工部署。Ubuntu / Debian 先运行 `sudo apt-get update` 和 `sudo apt-get install -y ca-certificates curl`；VLESS 还需 `sudo apt-get install -y jq openssl`。
 
-**不要在 128 MB 机器上执行 `go build`。** 在有 Go 1.23+ 的构建机上，按 NAT 机器架构编译 Adapter；以下为 Linux x86_64 示例，ARM64 将 `GOARCH=arm64`（ARM64 需手工部署，交互管理器只提供 x86_64 预编译文件）：
+**不要在 128 MB 机器上执行 `go build`。** 在有 Go 1.24+ 的构建机上，按 NAT 机器架构编译 Adapter；以下为 Linux x86_64 示例，ARM64 将 `GOARCH=arm64`（ARM64 需手工部署，交互管理器只提供 x86_64 预编译文件）：
 
 ```bash
 mkdir -p bin

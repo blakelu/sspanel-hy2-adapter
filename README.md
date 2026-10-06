@@ -1,6 +1,8 @@
-# SSPanel-UIM HY2 / VLESS Adapter
+# SSPanel-UIM HY2 / VLESS / AnyTLS Adapter
 
-一个独立的 Go 服务，用 SSPanel-UIM 用户数据为 Hysteria 2 提供 HTTP Auth，或通过 Xray gRPC API 动态管理 VLESS + REALITY / XTLS Vision 用户，并把两种协议的用户流量增量上报到 SSPanel-UIM WebAPI。
+一个独立的 Go 服务，用 SSPanel-UIM 用户数据为 Hysteria 2 提供 HTTP Auth，通过 Xray gRPC API 动态管理 VLESS 用户，或直接提供 AnyTLS 多用户服务，并把用户流量增量上报到 SSPanel-UIM WebAPI。
+
+AnyTLS 交互安装选择 `1 安装 → 3 AnyTLS`，支持 UUID 鉴权、用户撤销、TCP/UDP 流量记账、Cloudflare DNS-01 自动证书及续期。配套面板节点类型为 AnyTLS（sort=16），详见 [docs/ANYTLS.md](docs/ANYTLS.md)。
 
 ## 工作方式
 

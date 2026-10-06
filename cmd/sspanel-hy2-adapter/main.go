@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"sspanel-uim-hy2-adapter/internal/anytls"
 	"sspanel-uim-hy2-adapter/internal/auth"
 	"sspanel-uim-hy2-adapter/internal/config"
 	"sspanel-uim-hy2-adapter/internal/httpserver"
@@ -37,7 +38,12 @@ func run() error {
 	configPath := flag.String("config", "config.yaml", "path to the YAML configuration file")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	checkConfig := flag.Bool("check-config", false, "validate configuration and exit without contacting the panel")
+	capabilities := flag.Bool("capabilities", false, "print supported native protocols and exit")
 	flag.Parse()
+	if *capabilities {
+		fmt.Println("hy2 vless anytls")
+		return nil
+	}
 	if *showVersion {
 		fmt.Println(version)
 		return nil
@@ -48,6 +54,11 @@ func run() error {
 		return err
 	}
 	if *checkConfig {
+		if cfg.AnyTLS.Enabled {
+			if _, err := anytls.LoadCertificate(cfg.AnyTLS); err != nil {
+				return fmt.Errorf("load AnyTLS certificate: %w", err)
+			}
+		}
 		fmt.Println("configuration valid")
 		return nil
 	}
@@ -71,6 +82,32 @@ func run() error {
 
 	var collectors stats.Group
 	var userSynchronizer httpserver.UserSynchronizer
+	serverErrors := make(chan error, 2)
+	var anyServer *anytls.Server
+	if cfg.AnyTLS.Enabled {
+		state, err := stats.LoadState(cfg.AnyTLS.StateFile)
+		if err != nil {
+			return err
+		}
+		anyServer, err = anytls.New(cfg.AnyTLS, userProvider, userSource.Healthy, state.Snapshot(), logger)
+		if err != nil {
+			return err
+		}
+		defer anyServer.Close()
+		if err := anyServer.Sync(ctx); err != nil {
+			return fmt.Errorf("initial AnyTLS user synchronization: %w", err)
+		}
+		if err := anyServer.Listen(); err != nil {
+			return err
+		}
+		collector := stats.NewCollector(anyServer, panelClient, state, cfg.AnyTLS.PollInterval.Value(), false, logger)
+		collectors = append(collectors, collector.Collect)
+		userSynchronizer = anyServer
+		go collector.Run(ctx)
+		go anyServer.RunSync(ctx)
+		go func() { serverErrors <- anyServer.Serve(ctx) }()
+		logger.Info("AnyTLS listening", "address", anyServer.Addr().String())
+	}
 	if cfg.HY2.Enabled {
 		state, err := stats.LoadState(cfg.HY2.StateFile)
 		if err != nil {
@@ -109,7 +146,6 @@ func run() error {
 		WriteTimeout: cfg.Server.WriteTime.Value(),
 		IdleTimeout:  60 * time.Second,
 	}
-	serverErrors := make(chan error, 1)
 	go func() {
 		logger.Info("adapter listening", "address", cfg.Server.Listen, "auth_path", cfg.Server.AuthPath, "source", cfg.UserSource.Mode, "version", version)
 		serverErrors <- httpServer.ListenAndServe()
@@ -119,16 +155,22 @@ func run() error {
 	case <-ctx.Done():
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer shutdownCancel()
+		if anyServer != nil {
+			anyServer.Close()
+			if err := collectors.Collect(shutdownCtx); err != nil {
+				logger.Error("final AnyTLS traffic collection failed", "error", err)
+			}
+		}
 		if err := httpServer.Shutdown(shutdownCtx); err != nil {
 			return fmt.Errorf("shutdown HTTP server: %w", err)
 		}
 		logger.Info("adapter stopped")
 		return nil
 	case err := <-serverErrors:
-		if errors.Is(err, http.ErrServerClosed) {
+		if err == nil || errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
-		return fmt.Errorf("serve HTTP: %w", err)
+		return fmt.Errorf("serve adapter/proxy: %w", err)
 	}
 }
 
