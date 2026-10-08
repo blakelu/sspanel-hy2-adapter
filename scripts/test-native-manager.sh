@@ -106,6 +106,69 @@ EOF
 choose_vless_transport
 [ "$VLESS_TRANSPORT" = reality ]
 
+# XHTTP reuses REALITY credentials but syncs users with an empty flow.
+VLESS_TRANSPORT=xhttp-reality
+XHTTP_PATH=/proxy/xhttp
+XHTTP_HOST=www.microsoft.com
+for XHTTP_MODE in auto stream-one stream-up packet-up; do
+    write_config
+    jq -e --arg mode "$XHTTP_MODE" --arg private "$REALITY_PRIVATE" '
+        .inbounds[0] | .tag == "vless-xhttp-reality" and .port == 8443 and
+        .settings.clients == [] and (.settings | has("flow") | not) and
+        .streamSettings.network == "xhttp" and .streamSettings.security == "reality" and
+        .streamSettings.xhttpSettings == {path:"/proxy/xhttp", mode:$mode, host:"www.microsoft.com"} and
+        .streamSettings.realitySettings.privateKey == $private and
+        .streamSettings.realitySettings.shortIds == ["0123456789abcdef"] and
+        (.streamSettings | has("wsSettings") | not)
+    ' "$STAGE/server.json" >/dev/null
+    grep -qx '  inbound_tag: vless-xhttp-reality' "$STAGE/adapter.yaml"
+    grep -qx '  flow: ""' "$STAGE/adapter.yaml"
+    if [ -n "${NATIVE_XHTTP_TEST_OUTPUT:-}" ]; then
+        mkdir -p "$NATIVE_XHTTP_TEST_OUTPUT/$XHTTP_MODE"
+        cp "$STAGE/server.json" "$STAGE/adapter.yaml" "$STAGE/server.env" "$NATIVE_XHTTP_TEST_OUTPUT/$XHTTP_MODE/"
+    fi
+    rm -rf -- "$STAGE"
+    STAGE=
+done
+XHTTP_MODE=auto
+XHTTP_HOST=
+write_config
+jq -e '.inbounds[0].streamSettings.xhttpSettings | has("host") | not' "$STAGE/server.json" >/dev/null
+rm -rf -- "$STAGE"
+STAGE=
+write_settings
+[ "$(setting vless VLESS_TRANSPORT)" = xhttp-reality ]
+[ "$(setting vless XHTTP_PATH)" = /proxy/xhttp ]
+[ "$(setting vless XHTTP_MODE)" = auto ]
+exec 3<<'EOF'
+
+EOF
+choose_vless_transport
+[ "$VLESS_TRANSPORT" = xhttp-reality ]
+exec 3<<'EOF'
+
+invalid
+stream-one
+test.example.com
+EOF
+prompt_vless_xhttp
+[ "$XHTTP_PATH" = /proxy/xhttp ] && [ "$XHTTP_MODE" = stream-one ] && [ "$XHTTP_HOST" = test.example.com ]
+write_settings
+exec 3<<'EOF'
+
+
+-
+EOF
+prompt_vless_xhttp
+[ -z "$XHTTP_HOST" ]
+if (exec 3<<'EOF'
+bad-path
+EOF
+    prompt_vless_xhttp
+) >/dev/null 2>&1; then die 'invalid XHTTP path accepted'; fi
+VLESS_TRANSPORT=reality
+write_settings
+
 # Reject invalid paths and missing certificates before any deployment.
 for invalid_case in bad-path missing-cert; do
     if (

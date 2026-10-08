@@ -157,7 +157,7 @@ mode_names() {
 }
 choose_mode() {
     say '1) HY2' >&2
-    say '2) VLESS（REALITY / WebSocket + TLS）' >&2
+    say '2) VLESS（REALITY / WebSocket + TLS / XHTTP + REALITY）' >&2
     say '3) AnyTLS（TLS 直连 / SSPanel 多用户）' >&2
     say '0) 返回' >&2
     choice=$(ask '选择协议' '' no)
@@ -307,9 +307,12 @@ setting() {
             fi ;;
         VLESS_TRANSPORT)
             if [ -f "$setting_config" ]; then
-                jq -r 'if .inbounds[0].streamSettings.network == "ws" then "ws-tls" else "reality" end' "$setting_config"
+                jq -r 'if .inbounds[0].streamSettings.network == "ws" then "ws-tls" elif (.inbounds[0].streamSettings.network == "xhttp" or .inbounds[0].streamSettings.network == "splithttp") then "xhttp-reality" else "reality" end' "$setting_config"
             fi ;;
         WS_PATH) [ -f "$setting_config" ] && jq -r '.inbounds[0].streamSettings.wsSettings.path // empty' "$setting_config" ;;
+        XHTTP_PATH|XHTTP_MODE|XHTTP_HOST)
+            case "$setting_key" in XHTTP_PATH) setting_xhttp_key=path ;; XHTTP_MODE) setting_xhttp_key=mode ;; XHTTP_HOST) setting_xhttp_key=host ;; esac
+            [ -f "$setting_config" ] && jq -r --arg key "$setting_xhttp_key" '.inbounds[0].streamSettings.xhttpSettings[$key] // .inbounds[0].streamSettings.splithttpSettings[$key] // empty' "$setting_config" ;;
         TLS_CERT_FILE|TLS_KEY_FILE)
             if [ -f "$setting_config" ]; then
                 if [ "$setting_mode" = anytls ]; then
@@ -355,8 +358,11 @@ write_settings() {
                 printf 'EMAIL=%s\nCF_TOKEN=%s\nCF_ZONE_ID=%s\n' "$EMAIL" "$CF_TOKEN" "$CF_ZONE_ID"
             fi
         else
-            printf 'VLESS_TRANSPORT=reality\n'
+            printf 'VLESS_TRANSPORT=%s\n' "$VLESS_TRANSPORT"
             printf 'TARGET=%s\nSNI=%s\nREALITY_PRIVATE=%s\nSHORT_ID=%s\n' "$TARGET" "$SNI" "$REALITY_PRIVATE" "$SHORT_ID"
+            if [ "$VLESS_TRANSPORT" = xhttp-reality ]; then
+                printf 'XHTTP_PATH=%s\nXHTTP_MODE=%s\nXHTTP_HOST=%s\n' "$XHTTP_PATH" "$XHTTP_MODE" "$XHTTP_HOST"
+            fi
         fi
     } > "$settings_file.new"
     chmod 600 "$settings_file.new"
@@ -402,14 +408,16 @@ prompt_hy2() {
 }
 choose_vless_transport() {
     transport_current=$(default_of vless VLESS_TRANSPORT reality)
-    case "$transport_current" in reality) transport_default=1 ;; ws-tls) transport_default=2 ;; *) die '未知 VLESS 传输方式' ;; esac
+    case "$transport_current" in reality) transport_default=1 ;; ws-tls) transport_default=2 ;; xhttp-reality) transport_default=3 ;; *) die '未知 VLESS 传输方式' ;; esac
     say '1) VLESS + REALITY（直连）' >&2
     say '2) VLESS + WebSocket + TLS（Cloudflare 橙云，客户端 443）' >&2
+    say '3) VLESS + XHTTP + REALITY（直连，flow 留空）' >&2
     while :; do
         transport_choice=$(ask '选择 VLESS 传输方式' "$transport_default" no)
         case "$transport_choice" in
             1) VLESS_TRANSPORT=reality; return ;;
             2) VLESS_TRANSPORT=ws-tls; return ;;
+            3) VLESS_TRANSPORT=xhttp-reality; return ;;
             *) say '无效选择。' >&2 ;;
         esac
     done
@@ -752,7 +760,9 @@ ensure_openrc_cert_cron() {
     fi
 }
 prompt_vless_reality() {
-    TARGET=$(required 'REALITY 目标域名（需支持 TLS 1.3）' "$(setting vless TARGET)" no)
+    reality_target_label='REALITY 目标域名（需支持 TLS 1.3）'
+    if [ "$VLESS_TRANSPORT" = xhttp-reality ]; then reality_target_label='REALITY 目标域名（需支持 TLS 1.3 和 H2）'; fi
+    TARGET=$(required "$reality_target_label" "$(setting vless TARGET)" no)
     dns_name "$TARGET" || die '目标域名格式不正确'
     SNI=$(required 'REALITY 客户端 SNI' "$(default_of vless SNI "$TARGET")" no)
     dns_name "$SNI" || die 'SNI 格式不正确'
@@ -771,6 +781,22 @@ prompt_vless_reality() {
     [ -n "$REALITY_PRIVATE" ] && [ -n "$REALITY_PUBLIC" ] || die 'REALITY 密钥生成失败'
     SHORT_ID=$(random_value 'REALITY Short ID' "$(setting vless SHORT_ID)" 8)
     printf '%s\n' "$SHORT_ID" | grep -Eq '^[0-9a-fA-F]{2,16}$' || die 'Short ID 必须是 2 到 16 位十六进制字符'
+}
+prompt_vless_xhttp() {
+    XHTTP_PATH=$(required 'XHTTP 路径（以 / 开头）' "$(default_of vless XHTTP_PATH /xhttp)" no)
+    printf '%s\n' "$XHTTP_PATH" | grep -Eq '^/[A-Za-z0-9/_-]*$' || die 'XHTTP 路径必须以 / 开头，只能包含字母、数字、/、_、-'
+    while :; do
+        XHTTP_MODE=$(ask 'XHTTP 模式（auto / stream-one / stream-up / packet-up）' "$(default_of vless XHTTP_MODE auto)" no)
+        case "$XHTTP_MODE" in auto|stream-one|stream-up|packet-up) break ;; *) say '无效 XHTTP 模式。' >&2 ;; esac
+    done
+    XHTTP_HOST=$(ask 'XHTTP Host（可留空；输入 - 清空已有值）' "$(setting vless XHTTP_HOST)" no)
+    [ "$XHTTP_HOST" != - ] || XHTTP_HOST=
+    if [ -n "$XHTTP_HOST" ]; then dns_name "$XHTTP_HOST" || die 'XHTTP Host 必须是域名'; fi
+    say 'XHTTP + REALITY 使用源站直连，不能使用普通 Cloudflare 橙云；客户端 flow 留空，使用支持 XHTTP 的新版客户端。' >&2
+    if ! "$MANAGED_DIR/bin/sspanel-hy2-adapter-linux" -h 2>&1 | grep -q -- '-check-config'; then
+        say '更新 Adapter 以支持 XHTTP 空 flow。' >&2
+        fetch_assets vless
+    fi
 }
 
 write_config() {
@@ -972,6 +998,20 @@ EOF
   ]
 }
 EOF
+            if [ "$VLESS_TRANSPORT" = xhttp-reality ]; then
+                sed 's/inbound_tag: vless-reality/inbound_tag: vless-xhttp-reality/' "$STAGE/adapter.yaml" | \
+                    awk '{ print } /inbound_tag: vless-xhttp-reality/ { print "  flow: \"\"" }' > "$STAGE/adapter.yaml.new"
+                mv "$STAGE/adapter.yaml.new" "$STAGE/adapter.yaml"
+                jq --arg path "$XHTTP_PATH" --arg mode "$XHTTP_MODE" --arg host "$XHTTP_HOST" '
+                    .inbounds[0].tag = "vless-xhttp-reality" |
+                    .inbounds[0].streamSettings.network = "xhttp" |
+                    .inbounds[0].streamSettings.xhttpSettings = {path: $path, mode: $mode} |
+                    if $host != "" then .inbounds[0].streamSettings.xhttpSettings.host = $host else . end
+                ' "$STAGE/server.json" > "$STAGE/server.json.new"
+                mv "$STAGE/server.json.new" "$STAGE/server.json"
+                ADAPTER_AUTH_TOKEN=$ADAPTER_TOKEN SSPANEL_BASE_URL=$PANEL_URL SSPANEL_MU_KEY=$MU_KEY SSPANEL_NODE_ID=$NODE_ID \
+                    "$MANAGED_DIR/bin/sspanel-hy2-adapter-linux" -check-config -config "$STAGE/adapter.yaml" >/dev/null || die 'Adapter 不支持 XHTTP 空 flow 配置'
+            fi
         fi
         jq -e . "$STAGE/server.json" >/dev/null || die 'Xray JSON 无效'
         "$MANAGED_DIR/bin/xray-linux" run -test -config "$STAGE/server.json" >/dev/null || die 'Xray 配置校验失败'
@@ -1025,9 +1065,22 @@ deploy_config() {
         say '面板节点类型选择 AnyTLS（sort=16），地址填写源站域名，自定义配置：'
         printf '{"protocol":"anytls","offset_port_user":"%s","offset_port_node":"%s","sni":"%s","allow_insecure":false,"udp":true}\n' "$PUBLIC_PORT" "$LOCAL_PORT" "$DOMAIN"
         say "链接模板（替换 USER_UUID）：anytls://USER_UUID@$DOMAIN:$PUBLIC_PORT?sni=$DOMAIN&insecure=0#AnyTLS"
-    elif [ "$VLESS_TRANSPORT" = reality ]; then
-        say "REALITY SNI：$SNI；Public Key：$REALITY_PUBLIC；Short ID：$SHORT_ID。"
-        say '客户端 UUID 为 SSPanel 用户 UUID，flow 为 xtls-rprx-vision。'
+    elif [ "$VLESS_TRANSPORT" = reality ] || [ "$VLESS_TRANSPORT" = xhttp-reality ]; then
+        say "REALITY SNI：$SNI；Public Key：$REALITY_PUBLIC；Short ID：${SHORT_ID}。"
+        if [ "$VLESS_TRANSPORT" = xhttp-reality ]; then
+            say "客户端：VLESS / xhttp / REALITY；路径：$XHTTP_PATH；模式：$XHTTP_MODE；flow 留空；UUID 为 SSPanel 用户 UUID。"
+            say '面板节点类型使用 V2Ray（sort=11），地址填写源站 IP 或灰云域名，自定义配置：'
+            jq -cn --arg port "$PUBLIC_PORT" --arg local_port "$LOCAL_PORT" --arg sni "$SNI" --arg key "$REALITY_PUBLIC" --arg sid "$SHORT_ID" \
+                --arg path "$XHTTP_PATH" --arg mode "$XHTTP_MODE" --arg host "$XHTTP_HOST" \
+                '{protocol:"vless",offset_port_user:$port,offset_port_node:$local_port,network:"xhttp",security:"reality",flow:"",sni:$sni,fingerprint:"chrome",public_key:$key,short_id:$sid,path:$path,mode:$mode,udp:true} + (if $host == "" then {} else {host:$host} end)'
+            xhttp_uri_path=$(printf '%s' "$XHTTP_PATH" | sed 's|/|%2F|g')
+            xhttp_uri_host=
+            [ -z "$XHTTP_HOST" ] || xhttp_uri_host="&host=$XHTTP_HOST"
+            say "链接模板（替换 USER_UUID 和 NODE_ADDRESS）：vless://USER_UUID@NODE_ADDRESS:$PUBLIC_PORT?encryption=none&security=reality&sni=$SNI&fp=chrome&pbk=$REALITY_PUBLIC&sid=$SHORT_ID&type=xhttp&path=$xhttp_uri_path&mode=$XHTTP_MODE$xhttp_uri_host#VLESS-XHTTP-REALITY"
+            say 'NODE_ADDRESS 填节点源站 IP 或灰云域名；IPv6 地址需用 [] 包围。'
+        else
+            say '客户端 UUID 为 SSPanel 用户 UUID，flow 为 xtls-rprx-vision。'
+        fi
     fi
     say "以后运行 $MANAGER_BIN，可选择卸载、重启或修改配置。"
 }
@@ -1045,6 +1098,7 @@ configure_mode() {
         prompt_vless_ws
     else
         prompt_vless_reality
+        if [ "$VLESS_TRANSPORT" = xhttp-reality ]; then prompt_vless_xhttp; fi
     fi
     write_config
     deploy_config

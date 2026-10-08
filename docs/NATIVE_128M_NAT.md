@@ -132,6 +132,11 @@ WS 模式生成 `inbound_tag: vless-ws` 和 `xray.flow: ""`，Adapter 继续同�
 
 ## VLESS + REALITY / Vision
 
+管理器现支持第三种传输 `VLESS + XHTTP + REALITY`。已有节点选择
+`4 修改配置并重启 → 2 VLESS → 3 XHTTP + REALITY`，保留现有密钥/Short ID，
+新增路径和模式，用户同步时 flow 留空。面板与客户端也需同步切换传输；
+详见 [XHTTP + REALITY 部署与订阅](VLESS_XHTTP_REALITY.md)。
+
 ```bash
 test -f native/vless/server.env || cp native/vless/server.env.example native/vless/server.env
 test -f native/vless/adapter.yaml || cp native/vless/adapter.yaml.example native/vless/adapter.yaml

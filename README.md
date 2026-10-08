@@ -233,6 +233,11 @@ outbound 绑定 WireGuard 隧道地址，落地机只负责转发和 NAT，不�
 
 ## VLESS + REALITY / XTLS Vision Docker 部署
 
+原生管理脚本另支持可选的 **VLESS + XHTTP + REALITY**，已有 VLESS 可通过
+`4 修改配置 → 2 VLESS → 3 XHTTP + REALITY` 切换。支持复用 REALITY 密钥和
+SSPanel UUID、按用户统计流量；面板订阅需同步使用 XHTTP 和空 flow。
+详见 [XHTTP + REALITY](docs/VLESS_XHTTP_REALITY.md)。
+
 这套部署使用官方 `ghcr.io/xtls/xray-core:26.2.6` 镜像。Xray 的 VLESS inbound 初始用户列表为空，Adapter 启动后通过仅在 Docker 内网开放的 gRPC API 安装面板当前授权用户，不需要重启 Xray。
 
 准备配置：
