@@ -8,7 +8,7 @@ AnyTLS 使用独立节点类型及单个 Adapter/代理合并进程，选择 `1 
 
 ## 交互式安装和管理（推荐）
 
-当前仓库的预编译文件支持 **Linux x86_64（`uname -m` 为 `x86_64`）**。Ubuntu / Debian 需使用已运行 systemd 的普通服务器或 VPS；容器内若没有 systemd，安装器无法创建服务。先在 Ubuntu / Debian 的终端执行：
+当前仓库的预编译文件支持 **Linux x86_64 和 ARM64**。管理脚本通过 `uname -m` 自动识别 `x86_64` / `amd64` 或 `aarch64` / `arm64`，下载对应架构的二进制；两种架构使用下面相同的命令，无需在目标机器编译。Ubuntu / Debian 需使用已运行 systemd 的普通服务器或 VPS；容器内若没有 systemd，安装器无法创建服务。先在 Ubuntu / Debian 的终端执行：
 
 ```sh
 sudo apt-get update
@@ -30,7 +30,9 @@ wget -O /tmp/sspanel-native-manager.sh \
 
 安装时选择 HY2 或 VLESS；VLESS 再选择 REALITY 或 WebSocket + TLS（Cloudflare 橙云），修改配置时默认保留当前传输方式。依次填写 SSPanel 地址、MuKey、节点 ID、公网端口和 NAT 转发到本机的端口。**两项 NAT 端口默认相同**；若 NAT 是 `23008/UDP → 23008/UDP`，本机监听端口也应填 `23008`。WS 模式的公网端口是 Cloudflare 回源端口，客户端使用域名的 `443`，详见下方橙云部署章节。HY2 还需选择面板用户密码字段（`uuid` 或 `passwd`）、填写证书域名、ACME 邮箱、Cloudflare DNS API Token；REALITY 需目标域名和 SNI；WS/TLS 需橙云域名、WS 路径，再选择自动申请证书（邮箱、CF Token、Zone ID）或手动证书路径。Adapter Token、HY2 统计密钥、REALITY 私钥和 Short ID 直接回车即自动生成；修改配置时回车保留已有值，输入 `new` 重新生成。Cloudflare Token 和 MuKey 必须自行提供，不能随机生成。
 
-脚本从本项目 GitHub `main` 的 `bin/` 下载 Adapter、Hysteria 或 Xray，依据仓库的 `bin/SHA256SUMS` 校验，再调用现有原生安装器创建服务并设置开机自启。若仓库是私有的或文件尚未推送，GitHub Raw 会返回 404，下载会停止且不会安装 404 文本。可用 `NATIVE_REPO_RAW_BASE` 指向同结构的可信镜像。配置和生成的密钥保存在 `/etc/sspanel-native/` 与 `/opt/sspanel-native/`，权限为 root 可读；HY2 证书和流量状态在 `/var/lib/sspanel-native/`。
+脚本从本项目 GitHub `main` 的 `bin/` 下载 Adapter、Hysteria 或 Xray，依据仓库的 `bin/SHA256SUMS` 校验，再调用现有原生安装器创建服务并设置开机自启。x86_64 使用原有的 `sspanel-hy2-adapter-linux`、`hysteria-linux`、`xray-linux`；ARM64 使用对应的 `sspanel-hy2-adapter-linux-arm64`、`hysteria-linux-arm64`、`xray-linux-arm64`。安装到本机后统一使用原有服务路径，菜单和配置方式相同，HY2、VLESS、AnyTLS 均支持这两种架构。
+
+发布时须同时上传新版管理脚本、ARM64 二进制和更新后的 `bin/SHA256SUMS`。若仓库是私有的或文件尚未推送，GitHub Raw 会返回 404，下载会停止且不会安装 404 文本。可用 `NATIVE_REPO_RAW_BASE` 指向同结构的可信镜像。发布前也可将本仓库的 `scripts/`、`bin/` 复制到目标机器，Ubuntu / Debian 在仓库目录运行 `sudo env NATIVE_LOCAL_ASSETS_DIR="$PWD" sh scripts/native-manager.sh`；Alpine root shell 运行 `NATIVE_LOCAL_ASSETS_DIR="$PWD" sh scripts/native-manager.sh`，使用本地配套文件。配置和生成的密钥保存在 `/etc/sspanel-native/` 与 `/opt/sspanel-native/`，权限为 root 可读；HY2 证书和流量状态在 `/var/lib/sspanel-native/`。
 
 命令 `2` 会停止并移除 HY2/VLESS 服务、项目二进制、配置、项目目录内的证书、流量状态、日志和管理器本身；不会删除现有 Git 仓库，也不会卸载系统共享的 `curl`、`jq` 等软件包。外部路径上的 WS/TLS 证书和私钥不由脚本删除。卸载前脚本尝试上报最后一段流量，失败时需要明确输入 `FORCE` 才会继续。REALITY 安装结束会显示 Public Key 和 Short ID；WS/TLS 会显示域名、路径、客户端参数和链接模板；本项目不会修改 SSPanel 的订阅生成器。
 
@@ -55,7 +57,7 @@ Ubuntu 若已启用 UFW，还需放行**本机内部监听端口**，例如上�
 
 不使用交互管理器时，按下面步骤手工部署。Ubuntu / Debian 先运行 `sudo apt-get update` 和 `sudo apt-get install -y ca-certificates curl`；VLESS 还需 `sudo apt-get install -y jq openssl`。
 
-**不要在 128 MB 机器上执行 `go build`。** 在有 Go 1.24+ 的构建机上，按 NAT 机器架构编译 Adapter；以下为 Linux x86_64 示例，ARM64 将 `GOARCH=arm64`（ARM64 需手工部署，交互管理器只提供 x86_64 预编译文件）：
+**不要在 128 MB 机器上执行 `go build`。** 在有 Go 1.24+ 的构建机上，按 NAT 机器架构编译 Adapter；以下为手工部署的 Linux x86_64 示例，ARM64 将 `GOARCH=amd64` 改为 `GOARCH=arm64`。使用上面的交互管理器时无需执行此步骤：
 
 ```bash
 mkdir -p bin
@@ -166,7 +168,7 @@ systemctl show -p MemoryCurrent sspanel-native-hy2-adapter sspanel-native-hy2-hy
 
 同一节点不要让 Docker 版和原生版同时运行，否则端口冲突且可能重复上报。切换前先停止对应 Compose 服务。公网仅开放 NAT 分配的 HY2 UDP 或 VLESS TCP 端口。
 
-Ubuntu / Alpine 日志若出现 `Exec format error`，先检查 `uname -m` 和 `sha256sum bin/hysteria-linux /usr/local/bin/hysteria`。本项目提供的 Linux amd64 Hysteria v2.12.3 的 SHA-256 为 `8c7a68a906998b747a0db87586e364f995fbfddb95693ae6e2fdb68a6e920d3e`。两处文件应一致；不一致时，重新解压匹配架构的交付包，并从 `bin/hysteria-linux` 重新安装。
+Ubuntu / Alpine 日志若出现 `Exec format error`，先检查 `uname -m`，确认使用了对应架构的二进制。手工部署时用 `sha256sum bin/hysteria-linux /usr/local/bin/hysteria` 比较源文件和已安装文件；交互安装的源文件在 `/opt/sspanel-native/bin/hysteria-linux`。仓库中的 ARM64 原始文件名为 `bin/hysteria-linux-arm64`，校验值见 `bin/SHA256SUMS`，安装后仍命名为 `hysteria`。文件或架构不匹配时，重新获取对应架构的交付包，或使用新版交互管理器重新安装。
 
 OpenRC 的 `status: started` 只说明监督进程在运行。若 `wget -qO- http://127.0.0.1:18080/healthz` 仍提示 `Connection refused`，检查 `/var/log/sspanel-native/sspanel-native-hy2-adapter.err.log` 和 `.log`。Adapter 在首次成功读取面板用户之前不会开始监听，因此面板 URL、MuKey、节点 ID、DNS、TLS 或网络错误都可能使它反复启动失败。修正配置后先执行 `rc-service sspanel-native-hy2-adapter restart`，无需重启 Hysteria。
 

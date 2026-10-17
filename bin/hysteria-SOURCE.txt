@@ -1,0 +1,5 @@
+Hysteria v2.12.3 (Linux arm64)
+Source: https://github.com/apernet/hysteria
+Release: https://github.com/apernet/hysteria/releases/tag/app/v2.12.3
+Binary: https://github.com/HyNetworks/hysteria/releases/download/app/v2.12.3/hysteria-linux-arm64
+Official binary SHA-256: c8dc653c3ba0a28d29a26b8fa52d2086f27c0927afddce95c09965e7174e78b0

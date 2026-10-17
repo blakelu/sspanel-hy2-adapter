@@ -212,15 +212,23 @@ verify_download() {
     printf '%s\n' "$verify_sum" | grep -Eq '^[0-9a-f]{64}$' || die "校验清单缺少：$verify_path"
     printf '%s  %s\n' "$verify_sum" "$verify_file" | sha256sum -c - >/dev/null || die "SHA-256 校验失败：$verify_path"
 }
+native_binary_suffix() {
+    [ "$(uname -s)" = Linux ] || die '只支持 Linux'
+    native_arch=$(uname -m)
+    case "$native_arch" in
+        x86_64|amd64) printf 'linux\n' ;;
+        aarch64|arm64) printf 'linux-arm64\n' ;;
+        *) die "不支持的 CPU 架构：${native_arch}（仅支持 x86_64 / ARM64）" ;;
+    esac
+}
 fetch_assets() {
     fetch_mode=$1
-    [ "$(uname -m)" = x86_64 ] || die '当前仓库二进制仅支持 Linux x86_64'
-    [ "$(uname -s)" = Linux ] || die '只支持 Linux'
+    fetch_suffix=$(native_binary_suffix) || exit 1
     STAGE=$(mktemp -d)
     download bin/SHA256SUMS "$STAGE/bin/SHA256SUMS"
     case "$fetch_mode" in hy2) fetch_proxy=hysteria ;; vless) fetch_proxy=xray ;; anytls) fetch_proxy=sspanel-hy2-adapter ;; esac
-    fetch_files='scripts/install-native.sh bin/sspanel-hy2-adapter-linux bin/anytls-LICENSE bin/anytls-SOURCE.txt'
-    if [ "$fetch_mode" != anytls ]; then fetch_files="$fetch_files bin/$fetch_proxy-linux"; fi
+    fetch_files="scripts/install-native.sh bin/sspanel-hy2-adapter-$fetch_suffix bin/anytls-LICENSE bin/anytls-SOURCE.txt"
+    if [ "$fetch_mode" != anytls ]; then fetch_files="$fetch_files bin/$fetch_proxy-$fetch_suffix"; fi
     for fetch_path in $fetch_files; do
         download "$fetch_path" "$STAGE/$fetch_path"
         verify_download "$fetch_path" "$STAGE/$fetch_path"
@@ -228,9 +236,9 @@ fetch_assets() {
     install -d -m 700 "$MANAGED_DIR" "$MANAGED_DIR/bin" "$MANAGED_DIR/scripts" "$MANAGED_DIR/settings" "$MANAGED_DIR/native/$fetch_mode"
     install -m 600 "$STAGE/bin/SHA256SUMS" "$MANAGED_DIR/bin/SHA256SUMS"
     install -m 755 "$STAGE/scripts/install-native.sh" "$MANAGED_DIR/scripts/install-native.sh"
-    install -m 755 "$STAGE/bin/sspanel-hy2-adapter-linux" "$MANAGED_DIR/bin/sspanel-hy2-adapter-linux"
+    install -m 755 "$STAGE/bin/sspanel-hy2-adapter-$fetch_suffix" "$MANAGED_DIR/bin/sspanel-hy2-adapter-linux"
     install -m 644 "$STAGE/bin/anytls-LICENSE" "$STAGE/bin/anytls-SOURCE.txt" "$MANAGED_DIR/bin/"
-    if [ "$fetch_mode" != anytls ]; then install -m 755 "$STAGE/bin/$fetch_proxy-linux" "$MANAGED_DIR/bin/$fetch_proxy-linux"; fi
+    if [ "$fetch_mode" != anytls ]; then install -m 755 "$STAGE/bin/$fetch_proxy-$fetch_suffix" "$MANAGED_DIR/bin/$fetch_proxy-linux"; fi
     if [ "$fetch_mode" = hy2 ]; then
         "$MANAGED_DIR/bin/hysteria-linux" version >/dev/null || die 'Hysteria 无法在本机执行'
     elif [ "$fetch_mode" = vless ]; then

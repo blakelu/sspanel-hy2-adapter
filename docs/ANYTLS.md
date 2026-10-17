@@ -5,9 +5,10 @@
 独立节点 ID、公网 TCP 端口和本机 TCP 端口。原生 AnyTLS 与 Adapter 在同一
 进程中运行，不需要额外的 sing-box/Xray 进程。
 
-仓库发布新版脚本、`bin/sspanel-hy2-adapter-linux`、安装脚本及
+仓库发布新版脚本、`bin/sspanel-hy2-adapter-linux`（x86_64）、
+`bin/sspanel-hy2-adapter-linux-arm64`（ARM64）、安装脚本及
 `bin/SHA256SUMS` 后，可以沿用 GitHub Raw 下载方式。在发布之前，复制本仓库的
-`scripts/`、`bin/` 到 Linux x86_64 机器，使用本地配套文件：
+`scripts/`、`bin/` 到 Linux x86_64 或 ARM64 机器，使用本地配套文件（管理器自动识别架构）：
 
 ```sh
 sudo env NATIVE_LOCAL_ASSETS_DIR="$PWD" sh scripts/native-manager.sh
