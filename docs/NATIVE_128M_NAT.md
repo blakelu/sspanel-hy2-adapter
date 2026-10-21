@@ -26,7 +26,47 @@ wget -O /tmp/sspanel-native-manager.sh \
   sh /tmp/sspanel-native-manager.sh
 ```
 
-菜单命令 `1` 安装、`2` 卸载全部项目服务和数据、`3` 重启、`4` 修改配置并重启、`0` 退出。也可直接传入命令，例如 Ubuntu 上运行 `sudo sh /tmp/sspanel-native-manager.sh 1`。安装完成后会创建 `/usr/local/sbin/sspanel-native-manager`，以后在 Ubuntu 上运行 `sudo sspanel-native-manager`，在 Alpine root shell 中直接运行即可。
+菜单命令 `1` 安装、`2` 卸载全部项目服务和数据、`3` 重启、`4` 修改配置并重启、`5` 网络调优、`0` 退出。也可直接传入命令，例如 Ubuntu 上运行 `sudo sh /tmp/sspanel-native-manager.sh 1`。安装完成后会创建 `/usr/local/sbin/sspanel-native-manager`，以后在 Ubuntu 上运行 `sudo sspanel-native-manager`，在 Alpine root shell 中直接运行即可。
+
+### 拥塞控制与排队算法
+
+运行 `sudo sh scripts/native-manager.sh 5`，或在主菜单选择 `5`。无需先安装代理服务。
+进入调优菜单时以及每次修改后，会显示**当前本机组合（系统默认）**，例如
+`bbr + fq`，并通过 `tc qdisc show` 单独列出各网卡实际队列。多队列网卡的根队列
+可能是 `mq`，需看其子队列；虚拟网卡可能使用 `noqueue`。未安装 `tc` 时会说明
+无法读取实际队列，Debian/Ubuntu 可安装 `iproute2`，Alpine 可安装 `iproute2-tc`。
+
+| 组合 | 优点 | 局限及选择建议 |
+| --- | --- | --- |
+| BBR + fq | fq 配合逐流 pacing，适合优先测试 TCP 吞吐 | fq 不以主动控制排队延迟为主要目标；VLESS/AnyTLS 为主可先试 |
+| BBR + fq_codel | 用公平排队和主动队列管理控制本机积压 | 不提供 fq 那样的逐流 pacing；多协议混跑、关注满载延迟时可先试 |
+| CUBIC + fq_codel | 传统通用算法，兼顾本机队列延迟 | 遇到丢包会退让，高延迟、随机丢包线路可与 BBR 实测对照 |
+
+以上是试用起点，不能保证某一组合在所有线路上最快。自定义选项可输入内核支持的
+TCP 算法名称（如 `reno`），并选择 `fq`、`fq_codel` 或保留当前系统默认队列。
+只加载现有模块，不安装、更换内核，也不把内核的 `bbr` 标注为某个 BBR 版本。
+CAKE 更适合结合明确带宽做整形的场景，本菜单不提供未经带宽配置的 CAKE 预设。
+
+拥塞控制修改的是整台 VPS 的 TCP 默认值，适用于 VLESS/AnyTLS 等 TCP 连接；
+HY2 的 QUIC 拥塞控制由 Hysteria 自行管理。队列处理本机 TCP/UDP 出口流量，
+只能改善本机排队，不能消除运营商或宿主机的积压。
+
+调优写入 `/etc/sysctl.d/zz-sspanel-native-network.conf` 与
+`/etc/modules-load.d/sspanel-native-network.conf`。TCP 默认值立即更新，但已有监听
+套接字可能继续沿用旧算法，需要时用主菜单 `3` 重启对应服务。**修改
+`net.core.default_qdisc` 不会替换现有网卡队列**；通常要重启主机后检查实际队列，
+虚拟设备和显式网络配置仍可能不采用系统默认值。管理器不会自动重启主机或覆盖
+现有 `tc` 规则。
+
+首次调优会记录原始默认值；调优菜单 `6` 和卸载全部会移除本工具的调优配置，
+并恢复仍等于本工具最后设置值的项目，保留管理员后续修改。原值若来自其他工具，
+其已有持久配置会继续生效。已由本工具管理的 AnyTLS BBR 配置会迁移到全局调优，
+之后安装或修改 AnyTLS 会保留全局组合。恢复操作同样不会替换现有网卡队列。
+
+机制参考：[Linux TCP 设置](https://www.kernel.org/doc/html/latest/networking/ip-sysctl.html#tcp-variables)、
+[默认队列](https://www.kernel.org/doc/html/latest/admin-guide/sysctl/net.html#default-qdisc)、
+[fq](https://man7.org/linux/man-pages/man8/tc-fq.8.html)、
+[fq_codel](https://man7.org/linux/man-pages/man8/tc-fq_codel.8.html)。
 
 安装时选择 HY2 或 VLESS；VLESS 再选择 REALITY 或 WebSocket + TLS（Cloudflare 橙云），修改配置时默认保留当前传输方式。依次填写 SSPanel 地址、MuKey、节点 ID、公网端口和 NAT 转发到本机的端口。**两项 NAT 端口默认相同**；若 NAT 是 `23008/UDP → 23008/UDP`，本机监听端口也应填 `23008`。WS 模式的公网端口是 Cloudflare 回源端口，客户端使用域名的 `443`，详见下方橙云部署章节。HY2 还需选择面板用户密码字段（`uuid` 或 `passwd`）、填写证书域名、ACME 邮箱、Cloudflare DNS API Token；REALITY 需目标域名和 SNI；WS/TLS 需橙云域名、WS 路径，再选择自动申请证书（邮箱、CF Token、Zone ID）或手动证书路径。Adapter Token、HY2 统计密钥、REALITY 私钥和 Short ID 直接回车即自动生成；修改配置时回车保留已有值，输入 `new` 重新生成。Cloudflare Token 和 MuKey 必须自行提供，不能随机生成。
 

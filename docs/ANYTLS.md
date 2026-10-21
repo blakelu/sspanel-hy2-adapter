@@ -18,7 +18,13 @@ sudo env NATIVE_LOCAL_ASSETS_DIR="$PWD" sh scripts/native-manager.sh
 
 ## BBR 开关
 
-安装或选择 `4 修改配置并重启 → 3 AnyTLS` 时，证书配置后会询问是否开启 BBR：
+推荐使用主菜单 `5 网络调优`：可查看当前本机组合和各网卡实际队列，选择
+`BBR + fq`、`BBR + fq_codel`、`CUBIC + fq_codel` 或自定义。详见
+[拥塞控制与排队算法](NATIVE_128M_NAT.md#拥塞控制与排队算法)。启用全局调优后，
+安装或修改 AnyTLS 会保留全局组合，不再询问下面的旧版 BBR 开关。
+旧版开关的历史配置会在首次全局调优时迁移，并保留最初的 TCP 算法恢复记录。
+
+尚未使用全局调优时，安装或选择 `4 修改配置并重启 → 3 AnyTLS`，证书配置后会询问是否开启 BBR：
 
 ```text
 1) 开启 BBR（检查内核支持并设置开机生效）

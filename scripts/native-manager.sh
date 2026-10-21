@@ -16,6 +16,9 @@ CERT_LOCK_DIR=/run/sspanel-native-vless-cert.lock
 BBR_SYSCTL_FILE=/etc/sysctl.d/zz-sspanel-native-anytls-bbr.conf
 BBR_MODULE_FILE=/etc/modules-load.d/sspanel-native-anytls-bbr.conf
 BBR_MARKER='# Managed by sspanel-native-manager (AnyTLS BBR)'
+NETWORK_SYSCTL_FILE=/etc/sysctl.d/zz-sspanel-native-network.conf
+NETWORK_MODULE_FILE=/etc/modules-load.d/sspanel-native-network.conf
+NETWORK_MARKER='# Managed by sspanel-native-manager (network tuning)'
 
 die() { printf '错误：%s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
@@ -494,6 +497,12 @@ prompt_anytls() {
 }
 
 choose_anytls_bbr() {
+    if network_file_owned "$NETWORK_SYSCTL_FILE"; then
+        BBR_ENABLED=false
+        [ "$(sysctl -n net.ipv4.tcp_congestion_control)" != bbr ] || BBR_ENABLED=true
+        say '拥塞控制由菜单 5 全局调优管理；本次保留当前组合。' >&2
+        return 0
+    fi
     bbr_current=$(setting anytls BBR_ENABLED)
     if [ -z "$bbr_current" ]; then
         if command -v sysctl >/dev/null 2>&1 && [ "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || :)" = bbr ]; then
@@ -528,6 +537,10 @@ bbr_algorithm_available() {
     sysctl -n net.ipv4.tcp_available_congestion_control | tr ' ' '\n' | grep -qx "$1"
 }
 configure_anytls_bbr() {
+    if network_file_owned "$NETWORK_SYSCTL_FILE"; then
+        say '保留菜单 5 管理的全局网络调优组合。'
+        return 0
+    fi
     case "$BBR_ENABLED" in true|false) ;; *) die 'BBR_ENABLED 必须为 true 或 false' ;; esac
     command -v sysctl >/dev/null 2>&1 || die '配置 BBR 需要 sysctl 命令'
     bbr_before=$(sysctl -n net.ipv4.tcp_congestion_control) || die '无法读取 TCP 拥塞控制'
@@ -592,6 +605,155 @@ remove_anytls_bbr() {
         rm -f -- "$BBR_SYSCTL_FILE"
     fi
     if bbr_file_owned "$BBR_MODULE_FILE"; then rm -f -- "$BBR_MODULE_FILE"; fi
+}
+
+network_file_owned() { [ -f "$1" ] && [ "$(head -n 1 "$1")" = "$NETWORK_MARKER" ]; }
+network_value() {
+    awk -F= -v key="$2" '$1 ~ "^" key "[[:space:]]*$" { gsub(/[[:space:]]/, "", $2); print $2; exit }' "$1"
+}
+network_token() { printf '%s\n' "$1" | grep -Eq '^[a-zA-Z0-9_]+$'; }
+network_status() {
+    network_status_cc=$(sysctl -n net.ipv4.tcp_congestion_control) || die '无法读取本机 TCP 拥塞控制'
+    network_status_qdisc=$(sysctl -n net.core.default_qdisc) || die '无法读取本机默认排队算法'
+    say "当前本机组合（系统默认）：$network_status_cc + $network_status_qdisc"
+    say "内核已注册的 TCP 算法：$(sysctl -n net.ipv4.tcp_available_congestion_control)"
+    say '各网卡实际排队算法（mq 下还需看各子队列）：'
+    if command -v tc >/dev/null 2>&1; then
+        tc qdisc show || say '无法读取实际队列；请检查容器权限。'
+    else
+        say '未安装 tc，无法读取实际队列；Debian/Ubuntu 安装 iproute2，Alpine 安装 iproute2-tc。'
+    fi
+    say '系统默认值不等于网卡实际队列；虚拟网卡可能使用 noqueue，网卡配置也可能覆盖默认值。'
+}
+network_check_files() {
+    for network_file in "$NETWORK_SYSCTL_FILE" "$NETWORK_MODULE_FILE"; do
+        if [ -e "$network_file" ] && ! network_file_owned "$network_file"; then
+            die "网络调优路径已被其他工具使用：$network_file"
+        fi
+    done
+}
+apply_network_tuning() {
+    network_cc=$1
+    network_qdisc=$2
+    network_token "$network_cc" && network_token "$network_qdisc" || die '无效算法名称'
+    network_check_files
+    for network_file in "$BBR_SYSCTL_FILE" "$BBR_MODULE_FILE"; do
+        if [ -e "$network_file" ] && ! bbr_file_owned "$network_file"; then
+            die "旧 BBR 路径已被其他工具使用：$network_file"
+        fi
+    done
+    if ! bbr_algorithm_available "$network_cc"; then
+        command -v modprobe >/dev/null 2>&1 && modprobe "tcp_$network_cc" || die "无法加载 TCP 算法：${network_cc}；不会安装或更换内核"
+        bbr_algorithm_available "$network_cc" || die "内核未提供 TCP 算法：$network_cc"
+    fi
+    # A built-in qdisc may have no loadable module. The sysctl write below is
+    # the authoritative support/permission check; never unload host modules.
+    if command -v modprobe >/dev/null 2>&1; then modprobe "sch_$network_qdisc" 2>/dev/null || :; fi
+    network_before_cc=$(sysctl -n net.ipv4.tcp_congestion_control)
+    network_before_qdisc=$(sysctl -n net.core.default_qdisc)
+    network_state="$MANAGED_DIR/settings/network-tuning"
+    network_original_cc=$network_before_cc
+    if [ ! -f "$network_state/original.conf" ] && bbr_file_owned "$BBR_SYSCTL_FILE"; then
+        network_legacy_cc=$(bbr_original)
+        [ -z "$network_legacy_cc" ] || network_original_cc=$network_legacy_cc
+    fi
+    install -d -m 700 "$network_state" "$(dirname "$NETWORK_SYSCTL_FILE")" "$(dirname "$NETWORK_MODULE_FILE")"
+    # Stage persistence before kernel changes, so unwritable directories fail early.
+    printf '%s\nnet.ipv4.tcp_congestion_control = %s\nnet.core.default_qdisc = %s\n' \
+        "$NETWORK_MARKER" "$network_cc" "$network_qdisc" > "$NETWORK_SYSCTL_FILE.new"
+    {
+        printf '%s\n' "$NETWORK_MARKER"
+        [ "$network_cc" = reno ] || printf 'tcp_%s\n' "$network_cc"
+        case "$network_qdisc" in fq|fq_codel) printf 'sch_%s\n' "$network_qdisc" ;; esac
+    } > "$NETWORK_MODULE_FILE.new"
+    chmod 644 "$NETWORK_SYSCTL_FILE.new" "$NETWORK_MODULE_FILE.new"
+    if ! sysctl -w "net.core.default_qdisc=$network_qdisc" >/dev/null; then
+        rm -f -- "$NETWORK_SYSCTL_FILE.new" "$NETWORK_MODULE_FILE.new"
+        die '修改默认队列失败；请检查内核模块及 VPS/容器权限，原持久配置未变'
+    fi
+    if ! sysctl -w "net.ipv4.tcp_congestion_control=$network_cc" >/dev/null; then
+        sysctl -w "net.core.default_qdisc=$network_before_qdisc" >/dev/null || say '恢复原默认队列失败，请检查系统权限。' >&2
+        rm -f -- "$NETWORK_SYSCTL_FILE.new" "$NETWORK_MODULE_FILE.new"
+        die '修改 TCP 算法失败；原持久配置未变'
+    fi
+    if [ ! -f "$network_state/original.conf" ]; then
+        printf 'congestion = %s\nqdisc = %s\n' "$network_original_cc" "$network_before_qdisc" > "$network_state/original.conf"
+    fi
+    mv -f "$NETWORK_MODULE_FILE.new" "$NETWORK_MODULE_FILE"
+    mv -f "$NETWORK_SYSCTL_FILE.new" "$NETWORK_SYSCTL_FILE"
+    # The global configuration supersedes the legacy AnyTLS-only override.
+    if bbr_file_owned "$BBR_SYSCTL_FILE"; then
+        rm -f -- "$BBR_SYSCTL_FILE" "$MANAGED_DIR/settings/anytls-bbr/original-congestion"
+    fi
+    if bbr_file_owned "$BBR_MODULE_FILE"; then rm -f -- "$BBR_MODULE_FILE"; fi
+    say "已保存全局组合：${network_cc} + ${network_qdisc}（开机加载）。"
+    say 'TCP 默认值已更新；已有监听套接字可能继承旧算法，可用菜单 3 重启相应服务。'
+    say '仅更新 default_qdisc，不替换现有网卡队列。通常需重启主机后检查实际队列；虚拟网卡或显式网络配置可能不采用默认值。'
+    network_status
+}
+remove_network_tuning() {
+    network_check_files
+    if network_file_owned "$NETWORK_SYSCTL_FILE"; then
+        network_original="$MANAGED_DIR/settings/network-tuning/original.conf"
+        [ -f "$network_original" ] || die '缺少原始网络设置记录，保留调优配置'
+        network_original_cc=$(network_value "$network_original" congestion)
+        network_original_qdisc=$(network_value "$network_original" qdisc)
+        network_token "$network_original_cc" && network_token "$network_original_qdisc" || die '原始网络设置记录无效'
+        network_last_cc=$(network_value "$NETWORK_SYSCTL_FILE" 'net[.]ipv4[.]tcp_congestion_control')
+        network_last_qdisc=$(network_value "$NETWORK_SYSCTL_FILE" 'net[.]core[.]default_qdisc')
+        # Keep subsequent administrator changes, independently for each setting.
+        if [ "$(sysctl -n net.ipv4.tcp_congestion_control)" = "$network_last_cc" ]; then
+            if ! bbr_algorithm_available "$network_original_cc"; then
+                command -v modprobe >/dev/null 2>&1 && modprobe "tcp_$network_original_cc" || die '无法加载原 TCP 算法，保留调优配置'
+            fi
+            sysctl -w "net.ipv4.tcp_congestion_control=$network_original_cc" >/dev/null || die '恢复原 TCP 算法失败，保留调优配置'
+        fi
+        if [ "$(sysctl -n net.core.default_qdisc)" = "$network_last_qdisc" ]; then
+            if command -v modprobe >/dev/null 2>&1; then modprobe "sch_$network_original_qdisc" 2>/dev/null || :; fi
+            sysctl -w "net.core.default_qdisc=$network_original_qdisc" >/dev/null || die '恢复原默认队列失败，保留调优配置'
+        fi
+        rm -f -- "$NETWORK_SYSCTL_FILE" "$network_original"
+    fi
+    if network_file_owned "$NETWORK_MODULE_FILE"; then rm -f -- "$NETWORK_MODULE_FILE"; fi
+}
+network_tuning_menu() {
+    [ "$(uname -s)" = Linux ] || die '网络调优只支持 Linux'
+    command -v sysctl >/dev/null 2>&1 || die '网络调优需要 sysctl'
+    while :; do
+        say ''
+        network_status
+        say 'TCP 拥塞控制作用于 VLESS/AnyTLS 等 TCP 连接；HY2 的 QUIC 拥塞控制由 Hysteria 管理。'
+        say 'fq/fq_codel 可处理 TCP/UDP 出口流量，只能管理本机队列，无法消除运营商侧排队。'
+        say '1) BBR + fq（优先试用：TCP 吞吐与 pacing）'
+        say '2) BBR + fq_codel（混合协议，关注本机满载延迟）'
+        say '3) CUBIC + fq_codel（传统通用方案，可与 BBR 对照）'
+        say '4) 自定义（选择内核提供的 TCP 算法；fq/fq_codel 或保留默认队列）'
+        say '5) 刷新当前状态'
+        say '6) 恢复首次调优前的默认设置（保留管理员后续修改）'
+        say '0) 返回'
+        network_choice=$(ask '选择调优组合' 0 no)
+        case "$network_choice" in
+            1) apply_network_tuning bbr fq ;;
+            2) apply_network_tuning bbr fq_codel ;;
+            3) apply_network_tuning cubic fq_codel ;;
+            4)
+                network_custom_cc=$(ask 'TCP 算法名称（如 bbr/cubic/reno，以内核支持为准）' "$(sysctl -n net.ipv4.tcp_congestion_control)" no)
+                say '1) fq  2) fq_codel  0) 保留当前系统默认队列'
+                network_custom_qdisc=$(ask '选择排队算法' 0 no)
+                case "$network_custom_qdisc" in
+                    1) network_custom_qdisc=fq ;;
+                    2) network_custom_qdisc=fq_codel ;;
+                    0) network_custom_qdisc=$(sysctl -n net.core.default_qdisc) ;;
+                    *) say '无效选择。'; continue ;;
+                esac
+                apply_network_tuning "$network_custom_cc" "$network_custom_qdisc"
+                ;;
+            5) continue ;;
+            6) remove_network_tuning; say '已移除全局调优配置；现有网卡队列未替换。' ;;
+            0) return 0 ;;
+            *) say '无效选择。' ;;
+        esac
+    done
 }
 choose_vless_cert_mode() {
     cert_current=$(setting "${MODE:-vless}" TLS_CERT_MODE)
@@ -1210,6 +1372,7 @@ uninstall_all() {
         remove_service "$ADAPTER_SERVICE"
         remove_service "$PROXY_SERVICE"
     done
+    remove_network_tuning
     remove_anytls_bbr
     if [ "$(init_system)" = systemd ]; then systemctl daemon-reload; fi
     rm -f -- /usr/local/bin/sspanel-hy2-adapter /usr/local/bin/hysteria /usr/local/bin/xray
@@ -1240,12 +1403,13 @@ menu_action() {
                 configure_mode "$selected"
             fi
             ;;
+        5) network_tuning_menu ;;
         0) exit 0 ;;
         *) say '无效命令。' >&2 ;;
     esac
 }
 
-if [ "$#" -gt 1 ]; then die '用法：native-manager.sh [0|1|2|3|4|--renew-vless-cert|--renew-anytls-cert]'; fi
+if [ "$#" -gt 1 ]; then die '用法：native-manager.sh [0|1|2|3|4|5|--renew-vless-cert|--renew-anytls-cert]'; fi
 if [ "$#" -eq 1 ] && [ "$1" = --renew-vless-cert ]; then renew_vless_cert; exit 0; fi
 if [ "$#" -eq 1 ] && [ "$1" = --renew-anytls-cert ]; then renew_anytls_cert; exit 0; fi
 if [ "$#" -eq 1 ]; then menu_action "$1"; exit 0; fi
@@ -1255,6 +1419,7 @@ while :; do
     say '2) 卸载全部'
     say '3) 重启'
     say '4) 修改配置并重启'
+    say '5) 网络调优（拥塞控制 / 排队算法 / 当前组合）'
     say '0) 退出'
     menu_choice=$(ask '请输入命令' '' no)
     menu_action "$menu_choice"
