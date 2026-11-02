@@ -1,6 +1,11 @@
 # NAT 网关将公网 UDP 端口转发到本机 listen 的 UDP 端口。
 # DNS-01 无需公网 TCP 80/443；Hysteria 在持久化目录中维护和续期证书。
 listen: 0.0.0.0:8443
+# 默认不启用混淆；客户端确认支持后，可通过管理器选择 Salamander。
+# obfs:
+#   type: salamander
+#   salamander:
+#     password: "use-a-strong-random-token"
 acme:
   domains:
     - REPLACE_HY2_DOMAIN

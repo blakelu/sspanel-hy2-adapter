@@ -82,9 +82,9 @@ random_value() {
     random_current=$2
     random_bytes=$3
     if [ -n "$random_current" ]; then
-        random_input=$(ask "$random_label（回车保留，输入 new 重新生成）" "$random_current" yes)
+        random_input=$(ask "${random_label}（回车保留，输入 new 重新生成）" "$random_current" yes)
     else
-        random_input=$(ask "$random_label（直接回车自动生成）" '' yes)
+        random_input=$(ask "${random_label}（直接回车自动生成）" '' yes)
     fi
     case "$random_input" in
         ''|new) random_hex "$random_bytes" ;;
@@ -340,6 +340,10 @@ setting() {
         CREDENTIAL_FIELD)
             setting_adapter="/etc/sspanel-native/$setting_mode/adapter.yaml"
             [ -f "$setting_adapter" ] && awk '/^  credential_fields:/ { gsub(/[^a-z]/, "", $2); print $2; exit }' "$setting_adapter" ;;
+        HY2_OBFS|HY2_OBFS_PASSWORD)
+            if [ "$setting_mode" = hy2 ] && [ -f "$setting_config" ]; then
+                read_hy2_obfs_setting "$setting_config" "$setting_key"
+            fi ;;
         TARGET) [ -f "$setting_config" ] && jq -r '.inbounds[0].streamSettings.realitySettings.target // empty | sub(":443$"; "")' "$setting_config" ;;
         SNI) [ -f "$setting_config" ] && jq -r '.inbounds[0].streamSettings.realitySettings.serverNames[0] // empty' "$setting_config" ;;
         REALITY_PRIVATE) [ -f "$setting_config" ] && jq -r '.inbounds[0].streamSettings.realitySettings.privateKey // empty' "$setting_config" ;;
@@ -360,6 +364,7 @@ write_settings() {
         if [ "$MODE" = hy2 ]; then
             printf 'DOMAIN=%s\nEMAIL=%s\nCF_TOKEN=%s\nSTATS_SECRET=%s\nCREDENTIAL_FIELD=%s\n' \
                 "$DOMAIN" "$EMAIL" "$CF_TOKEN" "$STATS_SECRET" "$CREDENTIAL_FIELD"
+            printf 'HY2_OBFS=%s\nHY2_OBFS_PASSWORD=%s\n' "${HY2_OBFS:-none}" "${HY2_OBFS_PASSWORD:-}"
         elif [ "$MODE" = anytls ] || [ "$VLESS_TRANSPORT" = ws-tls ]; then
             if [ "$MODE" = anytls ]; then printf 'BBR_ENABLED=%s\n' "${BBR_ENABLED:-false}"; fi
             if [ "$MODE" = vless ]; then printf 'VLESS_TRANSPORT=ws-tls\nWS_PATH=%s\n' "$WS_PATH"; fi
@@ -416,6 +421,73 @@ prompt_hy2() {
     safe_token "$CF_TOKEN" || die 'Cloudflare Token 只能包含字母、数字、下划线和连字符'
     STATS_SECRET=$(random_value 'HY2 统计密钥' "$(setting hy2 STATS_SECRET)" 32)
     safe_token "$STATS_SECRET" || die '统计密钥只能包含字母、数字、下划线和连字符'
+    prompt_hy2_obfs
+}
+read_hy2_obfs_setting() {
+    # Import block-style YAML without executing settings or shell credentials.
+    # Unknown/inline obfs blocks are rejected by the prompt rather than erased.
+    awk -v key="$2" -v quote="'" '
+        function scalar(v) {
+            sub(/^[^:]*:[[:space:]]*/, "", v)
+            sub(/[[:space:]]+#.*$/, "", v)
+            sub(/[[:space:]]+$/, "", v)
+            if (substr(v,1,1) == "\"" && substr(v,length(v),1) == "\"") return substr(v,2,length(v)-2)
+            if (substr(v,1,1) == quote && substr(v,length(v),1) == quote) {
+                v=substr(v,2,length(v)-2); gsub(quote quote,quote,v)
+            }
+            return v
+        }
+        BEGIN { mode="none"; password="" }
+        /^obfs:/ { block=1; mode="unsupported"; next }
+        block && /^[^[:space:]#]/ { block=0 }
+        block && /^  type:/ { mode=scalar($0) }
+        block && /^    password:/ { password=scalar($0) }
+        END { if (key == "HY2_OBFS") print mode; else print password }
+    ' "$1"
+}
+validate_hy2_obfs() {
+    case "${HY2_OBFS:-none}" in
+        none) HY2_OBFS=none; HY2_OBFS_PASSWORD= ;;
+        salamander)
+            safe_token "${HY2_OBFS_PASSWORD:-}" || die 'HY2 混淆密码只能包含字母、数字、下划线和连字符'
+            ;;
+        *) die '当前管理器仅支持 HY2 标准模式和 Salamander；请先备份并人工迁移其他混淆配置' ;;
+    esac
+}
+prompt_hy2_obfs() {
+    hy2_obfs_current=$(default_of hy2 HY2_OBFS none)
+    case "$hy2_obfs_current" in none) hy2_obfs_default=1 ;; salamander) hy2_obfs_default=2 ;; *) die '已有 HY2 混淆配置尚不受支持，请先备份并人工迁移，避免覆盖' ;; esac
+    say '1) 标准 HTTP/3 模式（默认；不保证免于过滤）' >&2
+    say '2) Salamander 混淆（客户端也必须启用；不再提供标准 HTTP/3 响应）' >&2
+    while :; do
+        hy2_obfs_choice=$(ask 'HY2 传输外观' "$hy2_obfs_default" no)
+        case "$hy2_obfs_choice" in
+            1) HY2_OBFS=none; HY2_OBFS_PASSWORD=; break ;;
+            2)
+                HY2_OBFS=salamander
+                HY2_OBFS_PASSWORD=$(random_value 'Salamander 混淆密码' "$(setting hy2 HY2_OBFS_PASSWORD)" 32)
+                break ;;
+            *) say '请选择 1 或 2。' >&2 ;;
+        esac
+    done
+    validate_hy2_obfs
+}
+print_hy2_client() {
+    validate_hy2_obfs
+    say "SNI：${DOMAIN}；密码使用 SSPanel 用户的 ${CREDENTIAL_FIELD}；证书校验开启。"
+    say '面板 HY2 节点自定义配置（与服务端同步后重新生成订阅）：'
+    hy2_panel_obfs=
+    hy2_uri_obfs=
+    if [ "$HY2_OBFS" = salamander ]; then
+        hy2_panel_obfs=salamander
+        hy2_uri_obfs="&obfs=salamander&obfs-password=$HY2_OBFS_PASSWORD"
+        say '客户端必须设置 Salamander 和下方同一混淆密码；混淆密码不替代用户认证密码。'
+    fi
+    printf '{"offset_port_user":%s,"offset_port_node":%s,"sni":"%s","allow_insecure":false,"obfs":"%s","obfs_password":"%s"}\n' \
+        "$PUBLIC_PORT" "$PUBLIC_PORT" "$DOMAIN" "$hy2_panel_obfs" "$HY2_OBFS_PASSWORD"
+    say "链接模板（替换 USER_AUTH 和 NODE_ADDRESS）：hysteria2://USER_AUTH@NODE_ADDRESS:$PUBLIC_PORT/?sni=$DOMAIN&insecure=0$hy2_uri_obfs#HY2"
+    say "USER_AUTH 使用用户的 ${CREDENTIAL_FIELD}，含特殊字符时须进行 URL 编码；NODE_ADDRESS 填公网 IP 或证书域名，IPv6 用 [] 包围。"
+    say '订阅缺少混淆参数时须同步修改面板生成器，或用上述链接手动导入；此管理器不会修改面板。'
 }
 choose_vless_transport() {
     transport_current=$(default_of vless VLESS_TRANSPORT reality)
@@ -970,6 +1042,7 @@ prompt_vless_xhttp() {
 }
 
 write_config() {
+    if [ "$MODE" = hy2 ]; then validate_hy2_obfs; fi
     STAGE=$(mktemp -d)
     cat > "$STAGE/server.env" <<EOF
 ADAPTER_AUTH_TOKEN=$ADAPTER_TOKEN
@@ -1041,6 +1114,14 @@ masquerade:
     url: https://www.bing.com/
     rewriteHost: true
 EOF
+        if [ "$HY2_OBFS" = salamander ]; then
+            cat >> "$STAGE/server.yaml" <<EOF
+obfs:
+  type: salamander
+  salamander:
+    password: "$HY2_OBFS_PASSWORD"
+EOF
+        fi
     elif [ "$MODE" = anytls ]; then
         printf 'ANYTLS_DOMAIN=%s\n' "$DOMAIN" >> "$STAGE/server.env"
         cat > "$STAGE/adapter.yaml" <<EOF
@@ -1228,7 +1309,7 @@ deploy_config() {
         say "请确认面板节点 offset_port_user 为 $PUBLIC_PORT，并确保 NAT 的 $PROTOCOL 转发目标为本机 $LOCAL_PORT。"
     fi
     if [ "$MODE" = hy2 ]; then
-        say "SNI：$DOMAIN；密码使用 SSPanel 用户的 $CREDENTIAL_FIELD。"
+        print_hy2_client
     elif [ "$MODE" = anytls ]; then
         say "客户端：AnyTLS / TLS；SNI：$DOMAIN；密码使用 SSPanel 用户 UUID；证书校验开启。"
         say "BBR 配置：$BBR_ENABLED；系统 TCP 算法：$(sysctl -n net.ipv4.tcp_congestion_control)。"

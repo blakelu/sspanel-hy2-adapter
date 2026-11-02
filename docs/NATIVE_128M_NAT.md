@@ -149,6 +149,19 @@ wget -qO- http://127.0.0.1:18080/healthz
 
 HY2 客户端凭据使用面板用户 UUID（若节点 API 不返回 UUID，可将 `adapter.yaml` 的 `credential_fields` 改为 `[passwd]`）。客户端连接地址和端口使用 NAT 公网地址与公网 UDP 端口，SNI 使用证书覆盖的域名。
 
+### HY2 标准模式与 Salamander 混淆
+
+交互安装 HY2 或 `4 修改配置并重启 → 1 HY2` 时，可选择：
+
+- **标准 HTTP/3 模式（默认）**：不生成 `obfs`，保留网页伪装。旧部署没有混淆设置时仍使用此模式。
+- **Salamander**：生成 `obfs.type: salamander` 和混淆密码；客户端必须同时开启相同模式并填写相同密码。它会隐藏 QUIC 格式，也会让服务端不再兼容标准 HTTP/3；不能保证免于过滤或 IP 封锁。
+
+混淆密码可直接回车生成随机值，仅接受字母、数字、下划线和连字符，避免 YAML、JSON、链接转义产生歧义。它与 SSPanel 用户认证密码相互独立。修改配置时回车保留现有模式及密码，输入 `new` 轮换混淆密码；切回标准模式会清除已保存的混淆密码。设置保存在 root 可读的 `/opt/sspanel-native/settings/hy2.conf`，之后通过菜单修改其他设置也会保留。没有新设置项的旧安装会尝试从已有块式 YAML 导入模式和密码；Gecko 或无法识别的混淆配置会停止修改流程，须先备份并人工迁移。
+
+安装结束会输出面板 HY2 节点自定义配置和 `hysteria2://` 链接模板。其中面板字段为 `obfs` / `obfs_password`，链接参数为 `obfs` / `obfs-password`。请将参数同步到独立的 HY2 面板节点，再重新生成订阅。此仓库不含面板订阅生成器；若其尚未输出混淆参数，需修改面板生成器，或用模板替换用户凭据、公网地址后手动导入。用户凭据含特殊字符时必须 URL 编码。切换模式或密码后，已有客户端也必须同步更新。
+
+管理器暂不提供 Gecko、ECH 和端口跳跃的交互配置，也不推断第三方客户端的版本兼容性。Shadowrocket 等客户端需检查实际导入后的 Hysteria2、TLS/SNI 和混淆字段，并通过真实连接验证；UDP 小包探测成功不能替代 HY2 握手测试。标准模式和 Salamander 的线路效果需要分别对照，无法据此保证不封 IP。[官方混淆说明](https://hysteria.network/docs/advanced/Full-Server-Config/#obfuscation)、[官方链接格式](https://hysteria.network/docs/developers/URI-Scheme/)。
+
 ## VLESS + WebSocket + TLS（Cloudflare 橙云）
 
 交互管理器选择 `1 安装 → 2 VLESS → 2 WebSocket + TLS`。已有 VLESS 使用 `4 修改配置并重启 → 2 VLESS` 切换传输方式；回车保留当前方式。REALITY 与 WS/TLS 共用 VLESS 服务，切换会替换该服务配置；HY2 不受影响。
