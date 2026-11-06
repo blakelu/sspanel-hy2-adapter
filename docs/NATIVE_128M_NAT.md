@@ -26,7 +26,64 @@ wget -O /tmp/sspanel-native-manager.sh \
   sh /tmp/sspanel-native-manager.sh
 ```
 
-菜单命令 `1` 安装、`2` 卸载全部项目服务和数据、`3` 重启、`4` 修改配置并重启、`5` 网络调优、`0` 退出。也可直接传入命令，例如 Ubuntu 上运行 `sudo sh /tmp/sspanel-native-manager.sh 1`。安装完成后会创建 `/usr/local/sbin/sspanel-native-manager`，以后在 Ubuntu 上运行 `sudo sspanel-native-manager`，在 Alpine root shell 中直接运行即可。
+菜单命令 `1` 安装、`2` 卸载全部项目服务和数据、`3` 重启代理、`4` 修改代理配置并重启、`5` 网络调优、`6` 端口中转、`0` 退出。也可直接传入命令，例如 Ubuntu 上运行 `sudo sh /tmp/sspanel-native-manager.sh 1`。安装代理或添加首条中转规则后会创建 `/usr/local/sbin/sspanel-native-manager`，以后在 Ubuntu 上运行 `sudo sspanel-native-manager`，在 Alpine root shell 中直接运行即可。
+
+### 通用端口中转（TCP / UDP / BOTH）
+
+运行 `sudo sh scripts/native-manager.sh 6`，或在管理器主菜单选择 `6`。
+无需先安装 HY2、VLESS 或 AnyTLS，也不需要面板、证书或用户配置。
+中转菜单支持添加、修改、删除、查看规则及重启中转服务；修改时回车保留原值。
+每条规则填写**本机入口端口**、`tcp` / `udp` / `both`、**目标 IP 或域名**和**目标端口**。
+
+| 本机入口 | 协议 | 目标示例 | 效果 |
+| --- | --- | --- | --- |
+| 23008 | udp | `hy2.example.net:443` | 本机 UDP 23008 → 目标 UDP 443 |
+| 23009 | tcp | `192.0.2.10:8443` | 本机 TCP 23009 → 目标 TCP 8443 |
+| 23010 | both | `origin.example.net:443` | 同时转发 TCP 和 UDP，各自保持原传输协议 |
+
+同一本机端口可以分别添加一条 TCP 和一条 UDP 规则，并指定不同目标；
+`both` 会占用该端口的两种协议，不能再添加与其重叠的规则。
+入口监听 `0.0.0.0`（IPv4）；目标支持 IPv4、IPv6 和域名，IPv6 填裸地址如
+`2001:db8::10`，目标端口单独填写。域名交给系统解析，使用系统 DNS 缓存策略；
+已有连接不会因 DNS 变化迁移，UDP 会话结束后新会话才可能使用新的目标地址。
+目标域名应解析到实际落地服务器；HY2、REALITY、AnyTLS 目标通常使用灰云域名。
+
+NAT 机器仍需在宿主机／供应商侧配置公网端口转发，例如
+`公网 30008/UDP → 本机 23008/UDP → hy2.example.net:443/UDP`。
+本脚本管理的是**本机到目标的中转**；入口端口须由 NAT 分配并指向本机。
+若启用 UFW，按实际规则放行本机入口端口，如 `sudo ufw allow 23008/udp`；
+`both` 需放行 TCP 和 UDP。已被其他服务占用的入口会导致应用失败并恢复原配置。
+
+全部规则共用一个独立 Xray 进程，服务名为 `sspanel-native-relay`，支持
+systemd 和 Alpine OpenRC 开机自启。首次使用会补齐 `jq` / `curl` 等依赖，
+按 CPU 架构下载并校验仓库已有 Xray，独立安装到 `/usr/local/bin/sspanel-native-relay`。
+它与 VLESS 的 Xray 服务独立管理；规则保存在 `/opt/sspanel-native/settings/relay.json`，
+运行配置在 `/etc/sspanel-native/relay/server.json`，均仅供 root 读取。
+设置 `NATIVE_LOCAL_ASSETS_DIR` 时同样支持本地文件部署。
+转发使用 Xray 的端口映射入站及直连出站，参见 [官方端口映射说明](https://xtls.github.io/config/inbounds/tunnel.html)。
+
+中转进程使用 `GOGC=50`、`GOMEMLIMIT=48MiB`，软堆目标不等于 RSS 上限；
+128 MB 机器同时运行代理和中转时需实测剩余内存。转发按原始字节传输，
+TLS/SNI、HY2 混淆等由客户端和落地服务保持一致；落地看到的来源为中转机，
+此服务不对接面板鉴权或流量记账，流量由落地节点统计。
+
+**添加、修改、删除规则或重启会短暂中断全部中转连接**。删除最后一条规则会停止
+中转并取消开机自启；重新添加后恢复。主菜单 `3` / `4` 管理代理，
+中转使用菜单 `6` 管理；主菜单 `2` 卸载全部时也会删除中转服务和规则。
+
+Ubuntu / Debian 查看状态与日志：
+
+```sh
+sudo systemctl status sspanel-native-relay.service
+sudo journalctl -u sspanel-native-relay -n 80 --no-pager
+```
+
+Alpine root shell 使用：
+
+```sh
+rc-service sspanel-native-relay status
+tail -n 80 /var/log/sspanel-native/sspanel-native-relay*.log
+```
 
 ### 拥塞控制与排队算法
 
@@ -74,7 +131,7 @@ HY2 的 QUIC 拥塞控制由 Hysteria 自行管理。队列处理本机 TCP/UDP 
 
 发布时须同时上传新版管理脚本、ARM64 二进制和更新后的 `bin/SHA256SUMS`。若仓库是私有的或文件尚未推送，GitHub Raw 会返回 404，下载会停止且不会安装 404 文本。可用 `NATIVE_REPO_RAW_BASE` 指向同结构的可信镜像。发布前也可将本仓库的 `scripts/`、`bin/` 复制到目标机器，Ubuntu / Debian 在仓库目录运行 `sudo env NATIVE_LOCAL_ASSETS_DIR="$PWD" sh scripts/native-manager.sh`；Alpine root shell 运行 `NATIVE_LOCAL_ASSETS_DIR="$PWD" sh scripts/native-manager.sh`，使用本地配套文件。配置和生成的密钥保存在 `/etc/sspanel-native/` 与 `/opt/sspanel-native/`，权限为 root 可读；HY2 证书和流量状态在 `/var/lib/sspanel-native/`。
 
-命令 `2` 会停止并移除 HY2/VLESS 服务、项目二进制、配置、项目目录内的证书、流量状态、日志和管理器本身；不会删除现有 Git 仓库，也不会卸载系统共享的 `curl`、`jq` 等软件包。外部路径上的 WS/TLS 证书和私钥不由脚本删除。卸载前脚本尝试上报最后一段流量，失败时需要明确输入 `FORCE` 才会继续。REALITY 安装结束会显示 Public Key 和 Short ID；WS/TLS 会显示域名、路径、客户端参数和链接模板；本项目不会修改 SSPanel 的订阅生成器。
+命令 `2` 会停止并移除 HY2/VLESS/AnyTLS 和端口中转服务、项目二进制、配置、项目目录内的证书、流量状态、日志和管理器本身；不会删除现有 Git 仓库，也不会卸载系统共享的 `curl`、`jq` 等软件包。外部路径上的 WS/TLS 证书和私钥不由脚本删除。卸载前脚本尝试上报最后一段流量，失败时需要明确输入 `FORCE` 才会继续。REALITY 安装结束会显示 Public Key 和 Short ID；WS/TLS 会显示域名、路径、客户端参数和链接模板；本项目不会修改 SSPanel 的订阅生成器。
 
 Alpine 首次部署建议先执行 `apk add ca-certificates curl`，确保 Adapter、Hysteria 能访问 HTTPS 面板、Cloudflare 和证书颁发机构；安装 VLESS 时还需 `apk add jq`，用于校验 Xray JSON。Ubuntu / Debian 对应的软件包为 `ca-certificates curl jq`（上面的交互安装会补齐缺少的包）。`curl` 也用于重装前上报最后一段流量。
 

@@ -19,6 +19,12 @@ BBR_MARKER='# Managed by sspanel-native-manager (AnyTLS BBR)'
 NETWORK_SYSCTL_FILE=/etc/sysctl.d/zz-sspanel-native-network.conf
 NETWORK_MODULE_FILE=/etc/modules-load.d/sspanel-native-network.conf
 NETWORK_MARKER='# Managed by sspanel-native-manager (network tuning)'
+RELAY_SERVICE=sspanel-native-relay
+RELAY_BIN=/usr/local/bin/sspanel-native-relay
+RELAY_CONFIG_DIR=/etc/sspanel-native/relay
+RELAY_SYSTEMD_DIR=/etc/systemd/system
+RELAY_OPENRC_DIR=/etc/init.d
+RELAY_LOG_DIR=/var/log/sspanel-native
 
 die() { printf '错误：%s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
@@ -1429,6 +1435,327 @@ restart_mode() {
     wait_listener "$LOCAL_PORT"
 }
 
+relay_rules() {
+    if [ -f "$MANAGED_DIR/settings/relay.json" ]; then
+        cat "$MANAGED_DIR/settings/relay.json"
+    else
+        printf '[]\n'
+    fi
+}
+relay_host_valid() {
+    # Accept literal IPs (IPv6 without brackets) or ASCII DNS names, never URLs.
+    printf '%s\n' "$1" | awk '
+        function ipv4(s, a, n,i) {
+            n=split(s,a,"."); if (n!=4) return 0
+            for(i=1;i<=4;i++) if(a[i]!~/^[0-9]+$/ || length(a[i])>3 ||
+                a[i]+0>255 || (length(a[i])>1 && substr(a[i],1,1)=="0")) return 0
+            return 1
+        }
+        /:/ {
+            s=$0
+            if(s!~/^[0-9a-fA-F:.]+$/ || s~/:::/) exit 1
+            if(index(s,".")) {
+                tail=s; sub(/^.*:/,"",tail); if(!ipv4(tail)) exit 1
+                sub(/[0-9.]+$/,"0:0",s)
+            }
+            compressed=index(s,"::")>0
+            rest=s; sub(/::/,"",rest); if(index(rest,"::")) exit 1
+            if(!compressed && (s~/^:/ || s~/:$/)) exit 1
+            sub(/^::/,"",s); sub(/::$/,"",s); gsub(/::/,":",s)
+            n=split(s,a,":"); count=0
+            for(i=1;i<=n;i++) if(a[i]!="") {
+                if(a[i]!~/^[0-9a-fA-F]+$/ || length(a[i])>4) exit 1
+                count++
+            }
+            exit !((compressed && count<8) || (!compressed && count==8))
+        }
+        /^[0-9.]+$/ { exit !ipv4($0) }
+        {
+            if(length($0)>253 || $0!~/^[A-Za-z0-9.-]+$/) exit 1
+            s=$0; sub(/[.]$/,"",s); n=split(s,a,".")
+            for(i=1;i<=n;i++) if(length(a[i])<1 || length(a[i])>63 ||
+                a[i]!~/^[A-Za-z0-9]/ || a[i]!~/[A-Za-z0-9]$/) exit 1
+        }
+    '
+}
+relay_validate_rules() {
+    jq -e '
+        def port: type == "number" and . == floor and . >= 1 and . <= 65535;
+        type == "array" and all(.[];
+            (.port | port) and (.target_port | port) and
+            (.protocol == "tcp" or .protocol == "udp" or .protocol == "both") and
+            (.target | type == "string" and length > 0 and test("^[A-Za-z0-9.:-]+$"))) and
+        ([.[] | . as $r | (if .protocol == "both" then ["tcp", "udp"] else [.protocol] end)[] |
+            "\($r.port)/\(.)"] | length == (unique | length))
+    ' "$1" >/dev/null || die '中转规则无效，或同一端口的 TCP/UDP 规则重复'
+    jq -r '.[].target' "$1" | while IFS= read -r relay_host; do
+        relay_host_valid "$relay_host" || die "目标必须为 IP 或域名（IPv6 不带方括号）：$relay_host"
+    done || die '中转目标无效'
+}
+relay_write_config() {
+    jq '{
+        log: {loglevel: "warning"},
+        inbounds: [to_entries[] | .key as $id | .value |
+            {tag: ("relay-" + ($id | tostring)), listen: "0.0.0.0", port: .port,
+             protocol: "dokodemo-door", settings: {
+                address: .target, port: .target_port,
+                network: (if .protocol == "both" then "tcp,udp" else .protocol end),
+                followRedirect: false}}],
+        outbounds: [{tag: "direct", protocol: "freedom", settings: {}}]
+    }' "$1" > "$2"
+}
+relay_ensure_binary() {
+    [ ! -x "$RELAY_BIN" ] || return 0
+    # A dedicated copy lets relay and VLESS be managed independently. Download
+    # only Xray and its notices, with the existing architecture/checksum scheme.
+    relay_suffix=$(native_binary_suffix) || exit 1
+    download bin/SHA256SUMS "$STAGE/bin/SHA256SUMS"
+    for relay_asset in "bin/xray-$relay_suffix" bin/xray-LICENSE bin/xray-SOURCE.txt; do
+        download "$relay_asset" "$STAGE/$relay_asset"
+        verify_download "$relay_asset" "$STAGE/$relay_asset"
+    done
+    chmod 700 "$STAGE/bin/xray-$relay_suffix"
+    "$STAGE/bin/xray-$relay_suffix" version >/dev/null || die 'Xray 无法在本机执行'
+    install -d -m 755 "$(dirname "$RELAY_BIN")"
+    install -d -m 700 "$MANAGED_DIR/relay"
+    install -m 644 "$STAGE/bin/xray-LICENSE" "$STAGE/bin/xray-SOURCE.txt" "$MANAGED_DIR/relay/"
+    install -m 755 "$STAGE/bin/xray-$relay_suffix" "$RELAY_BIN.new"
+    mv -f "$RELAY_BIN.new" "$RELAY_BIN"
+}
+relay_install_service() {
+    if [ "$(init_system)" = systemd ]; then
+        mkdir -p "$RELAY_SYSTEMD_DIR"
+        cat > "$RELAY_SYSTEMD_DIR/$RELAY_SERVICE.service" <<EOF
+[Unit]
+Description=SSPanel native TCP/UDP port relay
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=$RELAY_BIN run -config $RELAY_CONFIG_DIR/server.json
+Restart=on-failure
+RestartSec=3
+Environment=GOGC=50
+Environment=GOMEMLIMIT=48MiB
+NoNewPrivileges=yes
+ProtectSystem=strict
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        chmod 644 "$RELAY_SYSTEMD_DIR/$RELAY_SERVICE.service"
+        systemctl daemon-reload
+    else
+        mkdir -p "$RELAY_OPENRC_DIR"
+        install -d -m 700 "$RELAY_LOG_DIR"
+        cat > "$RELAY_OPENRC_DIR/$RELAY_SERVICE" <<EOF
+#!/sbin/openrc-run
+name="$RELAY_SERVICE"
+description="SSPanel native TCP/UDP port relay"
+supervisor=supervise-daemon
+command="$RELAY_BIN"
+command_args="run -config $RELAY_CONFIG_DIR/server.json"
+pidfile="/run/\$RC_SVCNAME.pid"
+respawn_delay=3
+respawn_max=0
+output_log="$RELAY_LOG_DIR/$RELAY_SERVICE.log"
+error_log="$RELAY_LOG_DIR/$RELAY_SERVICE.err.log"
+export GOGC=50 GOMEMLIMIT=48MiB
+
+depend() { need net; after firewall; }
+EOF
+        chmod 755 "$RELAY_OPENRC_DIR/$RELAY_SERVICE"
+    fi
+}
+relay_enable_service() {
+    if [ "$(init_system)" = systemd ]; then
+        systemctl enable "$RELAY_SERVICE.service"
+    else
+        rc-update add "$RELAY_SERVICE" default
+    fi
+}
+relay_disable_service() {
+    if [ "$(init_system)" = systemd ]; then
+        systemctl disable --now "$RELAY_SERVICE.service" >/dev/null 2>&1 || :
+    else
+        rc-update del "$RELAY_SERVICE" default >/dev/null 2>&1 || :
+    fi
+    if service_active "$RELAY_SERVICE"; then service_stop "$RELAY_SERVICE"; fi
+}
+relay_port_listening() {
+    relay_hex=$(printf '%04X' "$2")
+    relay_state=0A
+    [ "$1" != udp ] || relay_state=07
+    for relay_proc in "/proc/net/$1" "/proc/net/${1}6"; do
+        [ -r "$relay_proc" ] || continue
+        if awk -v port=":$relay_hex" -v state="$relay_state" '
+            $2 ~ port "$" && $4 == state { found=1 } END { exit !found }
+        ' "$relay_proc"; then return 0; fi
+    done
+    return 1
+}
+relay_listener_list() {
+    jq -r '.[] | . as $r | (if .protocol == "both" then ["tcp", "udp"] else [.protocol] end)[] |
+        "\(.) \($r.port)"' "$1" > "$STAGE/listeners"
+}
+relay_ports_free() {
+    relay_listener_list "$1"
+    while read -r relay_proto relay_port; do
+        if relay_port_listening "$relay_proto" "$relay_port"; then
+            say "本机端口已被占用：$relay_port/$relay_proto" >&2
+            return 1
+        fi
+    done < "$STAGE/listeners"
+}
+relay_wait_listeners() {
+    # Check both transports separately. A service being active alone does not
+    # prove its sockets were bound successfully (e.g. another proxy owns a port).
+    relay_listener_list "$1"
+    relay_try=0
+    while [ "$relay_try" -lt 10 ]; do
+        relay_ready=yes
+        while read -r relay_proto relay_port; do
+            if ! relay_port_listening "$relay_proto" "$relay_port"; then
+                relay_ready=no; break
+            fi
+        done < "$STAGE/listeners"
+        if [ "$relay_ready" = yes ] && service_active "$RELAY_SERVICE"; then return 0; fi
+        relay_try=$((relay_try + 1))
+        sleep 1
+    done
+    return 1
+}
+relay_apply_rules() {
+    relay_validate_rules "$STAGE/rules.json"
+    # Rules are committed only on success; back up the runtime config for rollback.
+    [ ! -f "$RELAY_CONFIG_DIR/server.json" ] || cp "$RELAY_CONFIG_DIR/server.json" "$STAGE/old-server.json"
+    relay_was_active=no
+    if service_active "$RELAY_SERVICE"; then relay_was_active=yes; fi
+    install -d -m 700 "$MANAGED_DIR/settings" "$RELAY_CONFIG_DIR"
+    if [ "$(jq 'length' "$STAGE/rules.json")" -eq 0 ]; then
+        relay_disable_service
+        rm -f -- "$RELAY_CONFIG_DIR/server.json"
+        install -m 600 "$STAGE/rules.json" "$MANAGED_DIR/settings/relay.json"
+        say '已清空中转规则并停止中转服务。'
+    else
+        relay_ensure_binary
+        relay_write_config "$STAGE/rules.json" "$STAGE/server.json"
+        "$RELAY_BIN" run -test -config "$STAGE/server.json" >/dev/null || die 'Xray 中转配置校验失败；原规则未变'
+        relay_install_service
+        install -d -m 755 "$(dirname "$MANAGER_BIN")"
+        if [ "$0" != "$MANAGER_BIN" ]; then install -m 755 "$0" "$MANAGER_BIN"; fi
+        install -m 600 "$STAGE/server.json" "$RELAY_CONFIG_DIR/server.json.new"
+        mv -f "$RELAY_CONFIG_DIR/server.json.new" "$RELAY_CONFIG_DIR/server.json"
+        if service_active "$RELAY_SERVICE"; then service_stop "$RELAY_SERVICE"; fi
+        if relay_ports_free "$STAGE/rules.json" && service_start "$RELAY_SERVICE" && relay_wait_listeners "$STAGE/rules.json"; then
+            install -m 600 "$STAGE/rules.json" "$MANAGED_DIR/settings/relay.json.new"
+            mv -f "$MANAGED_DIR/settings/relay.json.new" "$MANAGED_DIR/settings/relay.json"
+            relay_enable_service
+            say '中转规则已生效，已设置开机自启。'
+        else
+            # Preserve the prior enabled/disabled state on a failed update.
+            if service_active "$RELAY_SERVICE"; then service_stop "$RELAY_SERVICE"; fi
+            if [ -f "$STAGE/old-server.json" ]; then
+                install -m 600 "$STAGE/old-server.json" "$RELAY_CONFIG_DIR/server.json"
+            else
+                rm -f -- "$RELAY_CONFIG_DIR/server.json"
+            fi
+            if [ "$relay_was_active" = yes ]; then
+                if ! service_start "$RELAY_SERVICE" || ! relay_wait_listeners "$MANAGED_DIR/settings/relay.json"; then
+                    die '已还原原配置，但恢复原中转服务失败；请检查中转服务日志'
+                fi
+            fi
+            die '中转启动失败，已还原原配置；请检查端口占用及中转服务日志'
+        fi
+    fi
+    rm -rf -- "$STAGE"
+    STAGE=
+}
+relay_list() {
+    say '当前中转规则（本机 IPv4 入口端口 / 协议 → 目标地址:端口）：'
+    relay_rules | jq -r 'to_entries[] | .value as $r |
+        "\(.key + 1)) \($r.port)/\($r.protocol) → \(if $r.target | contains(":") then "[" + $r.target + "]" else $r.target end):\($r.target_port)"'
+    if service_active "$RELAY_SERVICE"; then say '中转服务：运行中'; else say '中转服务：未运行'; fi
+}
+relay_edit() {
+    relay_edit_action=$1
+    STAGE=$(mktemp -d)
+    relay_rules > "$STAGE/rules.json"
+    relay_validate_rules "$STAGE/rules.json"
+    relay_index=-1
+    if [ "$relay_edit_action" != add ]; then
+        relay_list
+        relay_number=$(ask '规则编号（0 取消）' 0 no)
+        if [ "$relay_number" = 0 ]; then rm -rf -- "$STAGE"; STAGE=; return 0; fi
+        if ! numeric_id "$relay_number" || [ "$relay_number" -gt "$(jq 'length' "$STAGE/rules.json")" ]; then
+            die '无效规则编号'
+        fi
+        relay_index=$((relay_number - 1))
+    fi
+    if [ "$relay_edit_action" = delete ]; then
+        jq --argjson id "$relay_index" 'del(.[$id])' "$STAGE/rules.json" > "$STAGE/new-rules.json"
+    else
+        relay_old=$(jq --argjson id "$relay_index" 'if $id < 0 then {} else .[$id] end' "$STAGE/rules.json")
+        relay_port=$(port_prompt '本机入口端口（NAT 转发到本机的端口）' "$(printf '%s' "$relay_old" | jq -r '.port // empty')")
+        while :; do
+            relay_protocol=$(ask '转发协议（tcp / udp / both）' "$(printf '%s' "$relay_old" | jq -r '.protocol // "both"')" no)
+            case "$relay_protocol" in tcp|udp|both) break ;; *) say '请输入 tcp、udp 或 both。' >&2 ;; esac
+        done
+        while :; do
+            relay_target=$(required '目标 IP 或域名（不带协议、端口；IPv6 不带方括号）' "$(printf '%s' "$relay_old" | jq -r '.target // empty')" no)
+            relay_host_valid "$relay_target" && break
+            say '目标 IP 或域名格式无效。' >&2
+        done
+        relay_target_port=$(port_prompt '目标端口' "$(printf '%s' "$relay_old" | jq -r '.target_port // empty')")
+        jq --argjson id "$relay_index" --argjson port "$relay_port" --arg protocol "$relay_protocol" \
+            --arg target "$relay_target" --argjson target_port "$relay_target_port" '
+            {port: $port, protocol: $protocol, target: $target, target_port: $target_port} as $r |
+            if $id < 0 then . + [$r] else .[$id] = $r end
+        ' "$STAGE/rules.json" > "$STAGE/new-rules.json"
+    fi
+    mv -f "$STAGE/new-rules.json" "$STAGE/rules.json"
+    relay_apply_rules
+}
+relay_remove() {
+    # Called by uninstall-all, including relay-only installations.
+    relay_disable_service
+    rm -f -- "$RELAY_SYSTEMD_DIR/$RELAY_SERVICE.service" "$RELAY_OPENRC_DIR/$RELAY_SERVICE" "$RELAY_BIN"
+    rm -rf -- "$RELAY_CONFIG_DIR" "$MANAGED_DIR/relay"
+    rm -f -- "$MANAGED_DIR/settings/relay.json"
+}
+relay_menu() {
+    [ "$(uname -s)" = Linux ] || die '端口中转只支持 Linux'
+    init_system >/dev/null
+    ensure_dependencies vless
+    say '端口中转独立运行一个 Xray 进程，无需面板、证书或先安装代理。'
+    say '入口监听本机 IPv4；请先配置 NAT 和防火墙。修改规则会重启全部中转连接。'
+    while :; do
+        relay_list
+        say '1) 添加中转规则'
+        say '2) 修改中转规则'
+        say '3) 删除中转规则（删除最后一条会停止服务）'
+        say '4) 刷新规则与状态'
+        say '5) 重启中转服务'
+        say '0) 返回'
+        relay_choice=$(ask '选择中转操作' 0 no)
+        case "$relay_choice" in
+            1) relay_edit add ;;
+            2) relay_edit edit ;;
+            3) relay_edit delete ;;
+            4) continue ;;
+            5)
+                STAGE=$(mktemp -d)
+                relay_rules > "$STAGE/rules.json"
+                relay_apply_rules
+                ;;
+            0) return 0 ;;
+            *) say '无效选择。' ;;
+        esac
+    done
+}
+
 remove_service() {
     remove_name=$1
     if [ "$(init_system)" = systemd ]; then
@@ -1440,7 +1767,7 @@ remove_service() {
     rm -f -- "/etc/init.d/$remove_name" "/etc/systemd/system/$remove_name.service"
 }
 uninstall_all() {
-    say '将删除 HY2/VLESS/AnyTLS 服务、项目二进制、配置、证书、状态与日志；不会删除当前 Git 仓库和系统共享软件包。'
+    say '将删除 HY2/VLESS/AnyTLS 和端口中转服务、项目二进制、配置、证书、状态与日志；不会删除当前 Git 仓库和系统共享软件包。'
     uninstall_answer=$(ask '确认输入 DELETE' '' no)
     [ "$uninstall_answer" = DELETE ] || die '卸载已取消'
     for uninstall_mode in hy2 vless anytls; do
@@ -1448,6 +1775,7 @@ uninstall_all() {
     done
     disable_vless_cert_renewal
     disable_tls_cert_renewal anytls
+    relay_remove
     for uninstall_mode in hy2 vless anytls; do
         mode_names "$uninstall_mode"
         remove_service "$ADAPTER_SERVICE"
@@ -1485,12 +1813,13 @@ menu_action() {
             fi
             ;;
         5) network_tuning_menu ;;
+        6) relay_menu ;;
         0) exit 0 ;;
         *) say '无效命令。' >&2 ;;
     esac
 }
 
-if [ "$#" -gt 1 ]; then die '用法：native-manager.sh [0|1|2|3|4|5|--renew-vless-cert|--renew-anytls-cert]'; fi
+if [ "$#" -gt 1 ]; then die '用法：native-manager.sh [0|1|2|3|4|5|6|--renew-vless-cert|--renew-anytls-cert]'; fi
 if [ "$#" -eq 1 ] && [ "$1" = --renew-vless-cert ]; then renew_vless_cert; exit 0; fi
 if [ "$#" -eq 1 ] && [ "$1" = --renew-anytls-cert ]; then renew_anytls_cert; exit 0; fi
 if [ "$#" -eq 1 ]; then menu_action "$1"; exit 0; fi
@@ -1501,6 +1830,7 @@ while :; do
     say '3) 重启'
     say '4) 修改配置并重启'
     say '5) 网络调优（拥塞控制 / 排队算法 / 当前组合）'
+    say '6) 端口中转（TCP / UDP / BOTH → IP 或域名）'
     say '0) 退出'
     menu_choice=$(ask '请输入命令' '' no)
     menu_action "$menu_choice"

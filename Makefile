@@ -10,6 +10,7 @@ test-shell:
 	./scripts/test-sync-panel-port.sh
 	sh ./scripts/test-native-manager.sh
 	sh ./scripts/test-native-hy2-obfs.sh
+	sh ./scripts/test-native-relay.sh
 	sh ./scripts/test-anytls-bbr.sh
 
 vet:
